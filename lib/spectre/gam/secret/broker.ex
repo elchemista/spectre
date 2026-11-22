@@ -32,6 +32,7 @@ defmodule Spectre.GAM.Secret.Broker do
   @doc "Declares the strongest deployment boundary this broker actually provides."
   @callback profile() :: profile()
 
+  @doc "Exchanges a committed checkout receipt for capability scoped to its Act and Attempt."
   @callback checkout(CheckoutReceipt.t(), Act.t(), Attempt.t(), keyword()) ::
               {:ok, term()}
               | {:error, :ambiguous, failure_metadata()}

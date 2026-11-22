@@ -36,6 +36,7 @@ defmodule Spectre.Pipeline do
   @doc """
   Imports router pipeline macros into a custom pipeline module.
   """
+  @spec __using__(Macro.t()) :: Macro.t()
   defmacro __using__(_opts) do
     quote do
       import Spectre.Pipeline, only: [pipeline: 1, plug: 1, plug: 2]
@@ -48,6 +49,7 @@ defmodule Spectre.Pipeline do
   @doc """
   Groups router plug declarations.
   """
+  @spec pipeline(keyword()) :: Macro.t()
   defmacro pipeline(do: block), do: block
 
   @doc """
@@ -56,6 +58,7 @@ defmodule Spectre.Pipeline do
       plug Spectre.Router.Plugs.Regex
       plug Spectre.Router.Plugs.LocalClassifier, classifier_local: MyApp.Classifier
   """
+  @spec plug(Macro.t(), Macro.t()) :: Macro.t()
   defmacro plug(module, opts \\ []) do
     quote do
       @spectre_pipeline {unquote(module), unquote(opts)}

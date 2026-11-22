@@ -16,9 +16,14 @@ defmodule Spectre.Action.Provider do
 
   @type provider_result :: {:ok, term()} | {:error, term()}
 
+  @doc "Optionally discovers action specs using mount options and the injected `:provider_id`."
   @callback actions(keyword()) ::
               [Spec.t() | map()] | {:ok, [Spec.t() | map()]} | {:error, term()}
+
+  @doc "Executes the selected action with the caller context and mount options."
   @callback execute(Action.t(), Spectre.Context.t(), keyword()) :: term()
+
+  @doc "Optionally returns the schema hash the provider currently recognizes for an action."
   @callback schema_hash(Action.t(), keyword()) :: String.t() | nil | {:ok, String.t() | nil}
 
   @optional_callbacks actions: 1, schema_hash: 2

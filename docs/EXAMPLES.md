@@ -5,6 +5,51 @@ application behavior lives in a Server; installed capabilities live in a Stack.
 The complete nine-package, GAM-backed workflow is in
 [`integration/stack_tools`](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md).
 
+## Deterministic quickstart
+
+From the Core checkout, run `mix run docs/examples/agent_server_quickstart.exs`.
+The Agent recognizes pricing by pattern or local text similarity. The Server
+returns a fixed reply. The script starts the process, sends one input and
+reads the response using its interaction ID.
+[Source walkthrough](../README.md#build-a-deterministic-agent).
+
+## Chat and reusable Documents flow
+
+From a Spectre source checkout, run the 0.4.1 examples.
+
+```sh
+mix run docs/examples/core_agents/run.exs
+```
+
+Both agents use the same local model fixture and `:chat` prompt. Hello Agent
+sends its unmatched input to `generate/2` and uses the Server's default reply.
+Documents installs a package, exposes its flow through `expose :documents`,
+and reads a document with `call_tool(ctx, {:documents, :read}, args)`. Its
+flow handles the successful result. Framework defaults report provider and tool
+errors as failed results. Ordinary chat and document lookup start zero Activities.
+Copy the modules and replace the local model and document adapter with your own.
+Place the prompt under `priv/prompts` and point your Server's `prompt_root` there.
+[Example source](examples/core_agents/core_agents.exs).
+
+## Open chat and parallel Directive missions
+
+Run the example from a Directive 0.2.0 checkout alongside the Core checkout.
+`SPECTRE_PATH` points its Mix project at the local Core 0.4.1 source.
+
+```sh
+SPECTRE_PATH=../spectre mix run examples/agent_server_activity.exs
+```
+
+[Directive repository](https://github.com/elchemista/spectre_directive).
+
+The script starts one Root and classifies natural-language requests as chat
+or mission. It remembers the project mentioned in chat, starts two missions with
+distinct references, answers chat while both run, revises one and answers the
+other's question. It also shows the failure event when the model fails.
+The provider fixtures make the run repeatable. In an application, configure your
+model provider to classify and generate from arbitrary messages.
+[Open chat code](../README.md#open-chat-with-directive-missions).
+
 ## A complete deterministic agent with native OTP callbacks
 
 Start with Agent and Server. This example has no installed capabilities, so it omits both `stack:` and `tools:`. For a runnable example with a custom tool, follow [the invoice client](CUSTOM_STACK_TOOLS.md). To trace a route and its result tag, try [the mail walkthrough](HANDLER_WALKTHROUGH.md).

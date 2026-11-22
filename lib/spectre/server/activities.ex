@@ -8,6 +8,10 @@ defmodule Spectre.Server.Activities do
 
   @default_terminal_limit 256
   @event_limit 256
+  @output_queue_limit 32
+  @output_size_limit 128 * 1024
+  @initial_fence_retry 1_000
+  @max_fence_retry 30_000
 
   @type child :: {module(), keyword()}
   @type ref :: String.t()
@@ -20,14 +24,22 @@ defmodule Spectre.Server.Activities do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     {settings, opts} =
-      Keyword.split(opts, [:registry, :terminal_limit, :managed, :activity_control])
+      Keyword.split(opts, [
+        :registry,
+        :terminal_limit,
+        :max_activities,
+        :managed,
+        :activity_control
+      ])
 
     GenServer.start_link(__MODULE__, settings, opts)
   end
 
   @spec start(pid(), term(), child(), keyword()) :: {:ok, ref()} | {:error, term()}
   def start(owner, command_id, child, opts \\ []) do
-    with {:ok, ref} <- reserve(owner, command_id, child, opts), do: resume(owner, ref)
+    GenServer.call(owner, {:start, command_id, child, opts}, :infinity)
+  catch
+    :exit, _ -> {:error, :activity_start_outcome_unknown}
   end
 
   @spec reserve(pid(), term(), child(), keyword()) :: {:ok, ref()} | {:error, term()}
@@ -35,10 +47,14 @@ defmodule Spectre.Server.Activities do
     do: GenServer.call(owner, {:reserve, command_id, child, opts})
 
   @spec list(pid()) :: [map()]
-  def list(owner), do: GenServer.call(owner, :list)
+  def list(owner), do: GenServer.call(owner, :list, 2_500)
 
-  @spec view(pid(), term()) :: {:ok, map()} | {:error, :unknown_activity}
-  def view(owner, target), do: GenServer.call(owner, {:view, target})
+  @spec view(pid(), term()) :: {:ok, map()} | {:error, atom()}
+  def view(owner, target) do
+    GenServer.call(owner, {:view, target}, 2_500)
+  catch
+    :exit, _ -> {:error, :activity_owner_unavailable}
+  end
 
   @spec control(pid(), ref(), binary(), term(), keyword()) :: term()
   def control(owner, ref, id, operation, opts),
@@ -49,21 +65,47 @@ defmodule Spectre.Server.Activities do
     do: GenServer.cast(owner, {:control, ref, id, operation, opts})
 
   @spec presentation(pid(), binary()) ::
-          {:ok, pid(), reference(), non_neg_integer()} | {:error, :superseded} | :error
-  def presentation(owner, ref), do: GenServer.call(owner, {:presentation, ref})
-
-  @doc false
-  @spec validate_input(pid(), binary(), {binary(), pos_integer()}) :: :ok | {:error, atom()}
-  def validate_input(owner, ref, target),
-    do: GenServer.call(owner, {:validate_input, ref, target})
+          {:ok, pid(), reference(), non_neg_integer()} | {:error, atom()} | :error
+  def presentation(owner, ref) do
+    GenServer.call(owner, {:presentation, ref}, 2_500)
+  catch
+    :exit, _ -> {:error, :activity_owner_unavailable}
+  end
 
   @doc false
   @spec input(pid(), nil | {binary(), {binary(), pos_integer()}}, Spectre.Input.t()) ::
           :ok | :unmatched | {:error, atom()}
-  def input(owner, target, input), do: GenServer.call(owner, {:input, target, input})
+  def input(owner, target, input) do
+    GenServer.call(owner, {:input, target, input}, 2_500)
+  catch
+    :exit, {:noproc, _} -> {:error, :activity_owner_unavailable}
+    :exit, _ -> {:error, :activity_input_outcome_unknown}
+  end
 
   @spec report(pid(), ref(), term()) :: :ok
   def report(owner, ref, event), do: GenServer.cast(owner, {:report, ref, self(), event})
+
+  @doc false
+  @spec awaiting_children?(pid(), ref()) :: boolean()
+  def awaiting_children?(owner, ref) do
+    GenServer.call(owner, {:awaiting_children, ref})
+  catch
+    :exit, _ -> false
+  end
+
+  @doc false
+  @spec output({pid(), ref(), reference(), non_neg_integer()}, term()) :: :ok
+  def output({owner, ref, token, revision}, event) do
+    if :erlang.external_size(event) <= @output_size_limit do
+      # Each producer has at most one outstanding submission, even if a worker
+      # emits many stream chunks while the consumer is suspended.
+      GenServer.call(owner, {:output, ref, token, revision, event}, :infinity)
+    end
+
+    :ok
+  catch
+    :exit, _ -> :ok
+  end
 
   @doc false
   @spec finish(pid(), ref(), non_neg_integer(), term()) :: :ok | :superseded | {:error, atom()}
@@ -127,6 +169,16 @@ defmodule Spectre.Server.Activities do
   @spec resume(pid(), ref()) :: {:ok, ref()} | {:error, term()}
   def resume(owner, ref), do: GenServer.call(owner, {:resume, ref}, :infinity)
 
+  @doc false
+  @spec recover_start(pid(), binary(), term()) :: {:ok, map()} | {:error, term()}
+  def recover_start(owner, command_id, key) do
+    with {:ok, ref} <- GenServer.call(owner, {:recover_start, command_id}, :infinity) do
+      {:ok, %{ref: ref, key: key}}
+    end
+  catch
+    :exit, _ -> {:error, :activity_start_outcome_unknown}
+  end
+
   @spec lookup(pid(), ref()) :: {:ok, entry()} | {:error, :unknown_activity}
   def lookup(owner, ref), do: GenServer.call(owner, {:lookup, ref})
 
@@ -174,17 +226,20 @@ defmodule Spectre.Server.Activities do
          control: make_ref(),
          commands: %{},
          entries: %{},
+         retryable: %{},
          launches: %{},
          children: %{},
          terminal: :queue.new(),
          terminal_count: 0,
          terminal_limit: limit,
+         max_activities: Keyword.get(opts, :max_activities, :infinity),
          managed: opts[:managed],
          activity_control: opts[:activity_control],
          root: nil,
          root_control: nil,
          delivery_paused: false,
          events: :queue.new(),
+         delivery: nil,
          effect_workers: %{},
          retired_checkpoints: %{},
          unconfirmed_effects: %{},
@@ -200,6 +255,13 @@ defmodule Spectre.Server.Activities do
   end
 
   @impl true
+  def handle_call({:start, command_id, child, opts}, from, state) do
+    case handle_call({:reserve, command_id, child, opts}, from, state) do
+      {:reply, {:ok, ref}, state} -> handle_call({:resume, ref}, from, state)
+      {:reply, {:error, _}, _state} = error -> error
+    end
+  end
+
   def handle_call({:reserve, command_id, child, opts}, _from, %{managed: managed} = state)
       when is_pid(managed) do
     if opts[:generation] == state.activity_control,
@@ -213,6 +275,18 @@ defmodule Spectre.Server.Activities do
 
   def handle_call(:list, _from, state),
     do: {:reply, Enum.map(state.entries, fn {ref, entry} -> public(ref, entry) end), state}
+
+  def handle_call({:output, ref, token, revision, event}, _from, state) do
+    case state.entries[ref] do
+      %{status: :running, revision: ^revision, attempt: {^token, _, _}} = entry ->
+        if :queue.len(state.events) < @output_queue_limit,
+          do: {:reply, :ok, emit(state, ref, entry, {:output, event})},
+          else: {:reply, :ok, state}
+
+      _ ->
+        {:reply, :ok, state}
+    end
+  end
 
   def handle_call({:view, target}, _from, state),
     do: {:reply, find(state, target), state}
@@ -231,17 +305,9 @@ defmodule Spectre.Server.Activities do
     {:reply, result, state}
   end
 
-  def handle_call({:validate_input, ref, target}, {root, _}, %{root: root} = state) do
-    {:reply, if(input_recipient(state, ref, target), do: :ok, else: {:error, :stale_pending}),
-     state}
-  end
-
-  def handle_call({:validate_input, _, _}, _from, state),
-    do: {:reply, {:error, :untrusted_activity_transport}, state}
-
   def handle_call({:input, nil, input}, {root, _}, %{root: root} = state) do
-    with ref when is_binary(ref) <- state.input_focus,
-         %{id: id, revision: revision, accept: matcher} <- state.input_waits[ref],
+    with {ref, id} <- state.input_focus,
+         %{revision: revision, accept: matcher} <- get_in(state.input_waits, [ref, id]),
          true <- InputWait.matches?(matcher, input.text),
          {pid, activity_revision} <- input_recipient(state, ref, {id, revision}) do
       deliver_input(state, ref, pid, activity_revision, {id, revision}, input)
@@ -264,6 +330,7 @@ defmodule Spectre.Server.Activities do
     case Map.get(state.entries, ref) do
       %{last_control: {^id, result}} -> {:reply, result, state}
       %{status: :running} = entry -> control_entry(state, ref, entry, id, command, opts, from)
+      nil -> {:reply, {:error, :unknown_activity}, state}
       _ -> {:reply, {:error, :inactive_activity}, state}
     end
   end
@@ -281,6 +348,13 @@ defmodule Spectre.Server.Activities do
 
       :error ->
         {:reply, {:error, :unknown_activity}, state}
+    end
+  end
+
+  def handle_call({:recover_start, command_id}, from, state) do
+    case Map.fetch(state.commands, command_id) do
+      {:ok, ref} -> handle_call({:resume, ref}, from, state)
+      :error -> {:reply, {:error, :activity_start_outcome_unknown}, state}
     end
   end
 
@@ -318,6 +392,19 @@ defmodule Spectre.Server.Activities do
   def handle_call({:replace_storage, _}, _from, state),
     do: {:reply, {:error, :untrusted_activity_transport}, state}
 
+  def handle_call({:awaiting_children, ref}, {caller, _}, state) do
+    active? =
+      case state.entries[ref] do
+        %{pid: ^caller, status: :running} = entry ->
+          Map.has_key?(entry, :child_delivery) or Map.get(entry, :live_children, 0) > 0
+
+        _ ->
+          false
+      end
+
+    {:reply, active?, state}
+  end
+
   def handle_call(
         {:track_effect, control, ref, id, worker},
         {managed, _},
@@ -341,10 +428,11 @@ defmodule Spectre.Server.Activities do
     end
   end
 
-  def handle_cast({:ack, pid, control, id}, %{root: pid, root_control: control} = state),
-    do:
-      {:noreply,
-       %{state | events: :queue.filter(fn {event_id, _, _} -> event_id != id end, state.events)}}
+  def handle_cast(
+        {:ack, pid, control, id},
+        %{root: pid, root_control: control, delivery: {id, _, _}} = state
+      ),
+      do: {:noreply, deliver_next(%{state | delivery: nil})}
 
   def handle_cast({:ack, _, _, _}, state), do: {:noreply, state}
 
@@ -382,7 +470,11 @@ defmodule Spectre.Server.Activities do
       when is_reference(token) do
     if state.root != pid or state.root_control != control do
       state = %{state | root: pid, root_control: control}
-      {:noreply, resume_events(state)}
+
+      events =
+        if state.delivery, do: :queue.in_r(state.delivery, state.events), else: state.events
+
+      {:noreply, resume_events(%{state | events: events, delivery: nil})}
     else
       {:noreply, state}
     end
@@ -602,31 +694,62 @@ defmodule Spectre.Server.Activities do
   defp reserve_new(state, command_id, child, opts) do
     key = opts[:as]
 
-    if not is_nil(key) and Enum.any?(state.entries, fn {_, entry} -> live_key?(entry, key) end) do
-      {:reply, {:error, :already_running}, state}
-    else
-      ref = Spectre.Identity.uuid7()
+    cond do
+      name_busy?(state, key) ->
+        {:reply, {:error, :already_running}, state}
 
-      entry = %{
-        command_id: command_id,
-        child: child,
-        intent: intent(child, opts),
-        key: key,
-        parent: opts[:parent],
-        status: :reserved,
-        pid: nil,
-        reason: nil,
-        result: nil,
-        attempt: nil,
-        waiting: nil,
-        waiters: [],
-        revision: 0,
-        transition: nil,
-        last_control: nil
-      }
+      at_activity_capacity?(state) ->
+        {:reply, {:error, :activity_limit}, state}
 
-      state = %{state | commands: Map.put(state.commands, command_id, ref)}
-      {:reply, {:ok, ref}, put_entry(state, ref, entry)}
+      true ->
+        reserve_available(state, command_id, child, opts)
+    end
+  end
+
+  defp at_activity_capacity?(%{max_activities: :infinity}), do: false
+
+  defp at_activity_capacity?(state),
+    do:
+      map_size(state.entries) - state.terminal_count - map_size(state.retryable) >=
+        state.max_activities
+
+  defp name_busy?(_state, nil), do: false
+
+  defp name_busy?(state, key),
+    do: Enum.any?(state.entries, &live_key?(state, &1, key))
+
+  defp reserve_available(state, command_id, child, opts) do
+    ref = Spectre.Identity.uuid7()
+
+    entry = %{
+      command_id: command_id,
+      child: child,
+      intent: intent(child, opts),
+      key: opts[:as],
+      parent: opts[:parent],
+      status: :reserved,
+      pid: nil,
+      reason: nil,
+      result: nil,
+      attempt: nil,
+      waiting: nil,
+      waiters: [],
+      revision: 0,
+      transition: nil,
+      last_control: nil
+    }
+
+    state = put_in(state.commands[command_id], ref) |> update_live_children(entry.parent, 1)
+    {:reply, {:ok, ref}, put_entry(state, ref, entry)}
+  end
+
+  defp update_live_children(state, parent, delta) do
+    case state.entries[parent] do
+      %{status: :running} = entry ->
+        put_entry(state, parent, Map.update(entry, :live_children, delta, &(&1 + delta)))
+
+      _ ->
+        state
     end
   end
 
@@ -637,8 +760,10 @@ defmodule Spectre.Server.Activities do
         :erlang.term_to_binary(Keyword.get(opts, :intent, child), [:deterministic])
       )
 
-  defp live_key?(entry, key),
-    do: entry.key == key and entry.status in [:reserved, :starting, :running]
+  defp live_key?(state, {ref, entry}, key),
+    do:
+      entry.key == key and entry.status in [:reserved, :starting, :running] and
+        not Map.has_key?(state.retryable, ref)
 
   defp public(ref, entry),
     do: %{
@@ -662,7 +787,7 @@ defmodule Spectre.Server.Activities do
   defp find_key(_state, nil), do: {:error, :unknown_activity}
 
   defp find_key(state, target) do
-    case Enum.find(state.entries, fn {_, entry} -> live_key?(entry, target) end) do
+    case Enum.find(state.entries, &live_key?(state, &1, target)) do
       {ref, entry} -> {:ok, public(ref, entry)}
       nil -> {:error, :unknown_activity}
     end
@@ -691,7 +816,9 @@ defmodule Spectre.Server.Activities do
         )
 
         result = {:ok, public(ref, entry)}
-        {:reply, result, put_entry(state, ref, %{entry | last_control: {id, result}})}
+        state = put_entry(state, ref, %{entry | last_control: {id, result}})
+        state = if from, do: emit_control(state, ref, id, result), else: state
+        {:reply, result, state}
     end
   end
 
@@ -703,7 +830,7 @@ defmodule Spectre.Server.Activities do
       do: send(entry.pid, {__MODULE__, state.activity_control, :pause, entry.revision})
 
     entry = %{entry | transition: id}
-    request = %{ref: ref, id: id, command: command, from: from}
+    request = %{ref: ref, id: id, command: command, from: from, retry_in: @initial_fence_retry}
     {:noreply, state |> put_entry(ref, entry) |> fence_async(entry, request)}
   end
 
@@ -732,7 +859,8 @@ defmodule Spectre.Server.Activities do
 
     if retry_fence?(result) do
       Enum.each(request.from, &GenServer.reply(&1, {:pending, id}))
-      Process.send_after(self(), {:retry_control, %{request | from: []}}, 1_000)
+      retry = %{request | from: [], retry_in: min(request.retry_in * 2, @max_fence_retry)}
+      Process.send_after(self(), {:retry_control, retry}, request.retry_in)
       state
     else
       complete_control(state, ref, id, request, result)
@@ -847,18 +975,14 @@ defmodule Spectre.Server.Activities do
   end
 
   defp report_entry(state, ref, %{revision: revision} = entry, {:waiting_input, revision, wait}) do
-    focus = if wait.accept, do: ref, else: state.input_focus
+    focus = if wait.accept, do: {ref, wait.id}, else: state.input_focus
+    waits = Map.update(state.input_waits, ref, %{wait.id => wait}, &Map.put(&1, wait.id, wait))
 
-    %{state | input_waits: Map.put(state.input_waits, ref, wait), input_focus: focus}
+    %{state | input_waits: waits, input_focus: focus}
     |> emit(ref, entry, {:waiting_input, InputWait.public(wait)})
   end
 
-  defp report_entry(state, ref, _entry, {:closed_input, id}) do
-    case state.input_waits[ref] do
-      %{id: ^id} -> clear_input(state, ref)
-      _ -> state
-    end
-  end
+  defp report_entry(state, ref, _entry, {:closed_input, id}), do: clear_input(state, ref, id)
 
   defp report_entry(state, ref, %{transition: nil} = entry, {status, _} = event)
        when status in [:completed, :failed] do
@@ -872,6 +996,25 @@ defmodule Spectre.Server.Activities do
   defp report_entry(state, ref, entry, {:effect, {:governed_unknown, %{command_id: id}}} = event),
     do: enqueue_event(state, unknown_effect_id(id), public(ref, entry), event)
 
+  defp report_entry(
+         state,
+         ref,
+         %{revision: revision, transition: nil} = entry,
+         {:idle, revision}
+       ),
+       do: emit(state, ref, entry, :idle)
+
+  defp report_entry(state, ref, %{child_delivery: id} = entry, {:child_ack, id}) do
+    case :queue.out(Map.get(entry, :child_events, :queue.new())) do
+      {{:value, message}, events} ->
+        entry = entry |> Map.put(:child_events, events) |> deliver_child_event(state, message)
+        put_entry(state, ref, entry)
+
+      {:empty, _} ->
+        put_entry(state, ref, Map.drop(entry, [:child_delivery, :child_events]))
+    end
+  end
+
   defp report_entry(state, _ref, _entry, _event), do: state
 
   defp emit(%{managed: nil, root: nil} = state, _ref, _entry, _event), do: state
@@ -882,23 +1025,30 @@ defmodule Spectre.Server.Activities do
 
   defp enqueue_event(state, id, identity, event) do
     message = {id, Map.put(identity, :event_id, id), event}
-    deliver_event(state, message)
     events = :queue.in(message, state.events)
     events = if :queue.len(events) > @event_limit, do: :queue.drop(events), else: events
-    %{state | events: events}
+    deliver_next(%{state | events: events})
   end
 
   defp resume_events(state) do
-    state = %{state | delivery_paused: false}
-    Enum.each(:queue.to_list(state.events), &deliver_event(state, &1))
-    state
+    deliver_next(%{state | delivery_paused: false})
   end
 
-  defp deliver_event(%{root: root, delivery_paused: false} = state, {id, identity, event})
-       when is_pid(root),
-       do: send(root, {__MODULE__, state.root_control, :lifecycle, self(), id, identity, event})
+  # Keep queued events at the coordinator. Slow callbacks and checkpoint writes
+  # must not cause the Root's mailbox to grow with every lifecycle or output.
+  defp deliver_next(%{root: root, delivery_paused: false, delivery: nil} = state)
+       when is_pid(root) do
+    case :queue.out(state.events) do
+      {{:value, {id, identity, event} = message}, events} ->
+        send(root, {__MODULE__, state.root_control, :lifecycle, self(), id, identity, event})
+        %{state | delivery: message, events: events}
 
-  defp deliver_event(_state, _message), do: :ok
+      {:empty, _} ->
+        state
+    end
+  end
+
+  defp deliver_next(state), do: state
 
   defp clear_presentations(state, ref) do
     {closed, open} = Enum.split_with(state.presentations, fn {_, data} -> data.ref == ref end)
@@ -919,7 +1069,7 @@ defmodule Spectre.Server.Activities do
 
   defp input_recipient(state, ref, {id, revision}) do
     with %{status: :running, transition: nil, pid: pid, revision: current} <- state.entries[ref],
-         %{id: ^id, revision: ^revision} = wait <- state.input_waits[ref],
+         %{revision: ^revision} = wait <- get_in(state.input_waits, [ref, id]),
          true <- is_pid(pid) and InputWait.live?(wait) do
       {pid, current}
     else
@@ -927,14 +1077,25 @@ defmodule Spectre.Server.Activities do
     end
   end
 
-  defp deliver_input(state, ref, pid, revision, target, input) do
+  defp deliver_input(state, ref, pid, revision, {id, _} = target, input) do
     send(pid, {__MODULE__, state.activity_control, :reply_input, revision, target, input})
-    {:reply, :ok, clear_input(state, ref)}
+    {:reply, :ok, clear_input(state, ref, id)}
   end
 
   defp clear_input(state, ref) do
-    focus = if state.input_focus == ref, do: nil, else: state.input_focus
+    focus = if match?({^ref, _}, state.input_focus), do: nil, else: state.input_focus
     %{state | input_waits: Map.delete(state.input_waits, ref), input_focus: focus}
+  end
+
+  defp clear_input(state, ref, id) do
+    waits = Map.delete(Map.get(state.input_waits, ref, %{}), id)
+
+    if map_size(waits) == 0 do
+      clear_input(state, ref)
+    else
+      focus = if state.input_focus == {ref, id}, do: nil, else: state.input_focus
+      %{state | input_waits: Map.put(state.input_waits, ref, waits), input_focus: focus}
+    end
   end
 
   defp close_show(%{managed: managed, activity_control: control}, show) when is_binary(show),
@@ -946,14 +1107,45 @@ defmodule Spectre.Server.Activities do
   defp close_show(_state, _show), do: :ok
 
   defp terminal(state, ref, entry, status, event) do
-    entry = %{entry | status: status, pid: nil, attempt: nil, child: nil}
+    entry =
+      %{entry | status: status, pid: nil, attempt: nil, child: nil}
+      |> Map.drop([:child_delivery, :child_events, :live_children])
 
     state
+    |> release_child_capacity(ref, entry)
     |> emit(ref, entry, event)
+    |> emit_to_parent(ref, entry, event)
     |> clear_presentations(ref)
     |> clear_input(ref)
     |> remember_terminal(ref, entry)
     |> retire_settled_checkpoint(ref)
+  end
+
+  defp emit_to_parent(state, ref, %{parent: parent} = child, event) do
+    case state.entries[parent] do
+      %{pid: pid, status: :running} = entry when is_pid(pid) ->
+        id = Spectre.Identity.uuid7()
+        message = {id, Map.put(public(ref, child), :event_id, id), event}
+        put_entry(state, parent, queue_child_event(entry, state, message))
+
+      _ ->
+        state
+    end
+  end
+
+  # Allow one unacknowledged terminal event per parent runtime. The coordinator
+  # keeps the bounded backlog and discards it when the parent itself stops.
+  defp queue_child_event(%{child_delivery: _} = entry, _state, message) do
+    events = :queue.in(message, Map.get(entry, :child_events, :queue.new()))
+    events = if :queue.len(events) > @event_limit, do: :queue.drop(events), else: events
+    Map.put(entry, :child_events, events)
+  end
+
+  defp queue_child_event(entry, state, message), do: deliver_child_event(entry, state, message)
+
+  defp deliver_child_event(entry, state, {id, identity, event}) do
+    send(entry.pid, {__MODULE__, state.activity_control, :child_lifecycle, identity, event})
+    Map.put(entry, :child_delivery, id)
   end
 
   defp reserve_entry(state, command_id, child, opts) do
@@ -971,6 +1163,30 @@ defmodule Spectre.Server.Activities do
   end
 
   defp launch(state, ref, entry) do
+    case reactivate_reservation(state, ref, entry) do
+      {:ok, state} -> launch_reserved(state, ref, entry)
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp reactivate_reservation(state, ref, entry) do
+    cond do
+      not is_map_key(state.retryable, ref) ->
+        {:ok, state}
+
+      name_busy?(state, entry.key) ->
+        {:error, :already_running}
+
+      at_activity_capacity?(state) ->
+        {:error, :activity_limit}
+
+      true ->
+        state = %{state | retryable: Map.delete(state.retryable, ref)}
+        {:ok, update_live_children(state, entry.parent, 1)}
+    end
+  end
+
+  defp launch_reserved(state, ref, entry) do
     case ensure_supervisor(state) do
       {:ok, state} ->
         supervisor = state.supervisor
@@ -981,7 +1197,7 @@ defmodule Spectre.Server.Activities do
         {module, opts} = entry.child
 
         # Starting a child can wait for its init. Keep the owner free to handle exits.
-        child = {module, child_options(opts, owner, ref, entry.key, name)}
+        child = {module, child_options(opts, owner, ref, entry.key, name, elem(attempt, 0))}
 
         registration = if state.managed, do: {state.managed, state.activity_control, ref}
 
@@ -994,7 +1210,7 @@ defmodule Spectre.Server.Activities do
         {:noreply, %{state | launches: Map.put(state.launches, task.ref, ref)}}
 
       {:error, reason} ->
-        {:reply, {:error, reason}, state}
+        {:reply, {:error, reason}, remember_retryable(state, ref, entry)}
     end
   end
 
@@ -1009,7 +1225,7 @@ defmodule Spectre.Server.Activities do
   defp register(nil), do: :ok
   defp register({managed, control, ref}), do: Managed.register_activity(managed, control, ref)
 
-  defp child_options(opts, owner, ref, key, name) do
+  defp child_options(opts, owner, ref, key, name, output_token) do
     opts = Keyword.put(opts, :name, name)
 
     case opts[:activity] do
@@ -1017,7 +1233,14 @@ defmodule Spectre.Server.Activities do
         opts
 
       binding ->
-        binding = Map.merge(binding, %{owner: owner, ref: ref, key: key, revision: 0})
+        binding =
+          Map.merge(binding, %{
+            owner: owner,
+            ref: ref,
+            key: key,
+            revision: 0,
+            output_token: output_token
+          })
 
         opts
         |> Keyword.put(:activity, binding)
@@ -1063,8 +1286,33 @@ defmodule Spectre.Server.Activities do
       # Loss of infrastructure before adoption leaves the reservation retryable.
       stop_waiting(entry.waiting)
       Enum.each(entry.waiters, &GenServer.reply(&1, {:error, :activity_supervisor_unavailable}))
-      put_entry(state, ref, %{entry | status: :reserved, attempt: nil, waiting: nil, waiters: []})
+      remember_retryable(state, ref, entry)
     end
+  end
+
+  # Failed launches never activate user callbacks. Their reservations can be
+  # retried by command ID while retained, and release capacity and logical names.
+  defp remember_retryable(state, ref, entry) do
+    entry = %{entry | status: :reserved, attempt: nil, waiting: nil, waiters: []}
+    state = state |> update_live_children(entry.parent, -1) |> put_entry(ref, entry)
+    retryable = Map.put(state.retryable, ref, System.unique_integer([:monotonic, :positive]))
+    state = %{state | retryable: retryable}
+
+    if map_size(retryable) > retryable_limit(state.max_activities) do
+      {oldest, _} = Enum.min_by(retryable, &elem(&1, 1))
+      forget_entry(state, oldest)
+    else
+      state
+    end
+  end
+
+  defp retryable_limit(:infinity), do: @default_terminal_limit
+  defp retryable_limit(limit), do: min(limit, @default_terminal_limit)
+
+  defp release_child_capacity(state, ref, entry) do
+    if Map.has_key?(state.retryable, ref),
+      do: %{state | retryable: Map.delete(state.retryable, ref)},
+      else: update_live_children(state, entry.parent, -1)
   end
 
   defp adopt(state, ref, {:ok, pid}) do
@@ -1169,7 +1417,7 @@ defmodule Spectre.Server.Activities do
   defp stop_waiting(pid), do: Process.exit(pid, :kill)
 
   defp remember_terminal(%{terminal_limit: :infinity} = state, ref, entry),
-    do: put_entry(state, ref, entry)
+    do: put_entry(%{state | terminal_count: state.terminal_count + 1}, ref, entry)
 
   # In-memory replay is available while the terminal record is retained.
   # Keep the command index and its record in the same eviction step.
@@ -1181,17 +1429,21 @@ defmodule Spectre.Server.Activities do
       %{state | terminal: terminal, terminal_count: state.terminal_count + 1}
     else
       {{:value, oldest}, terminal} = :queue.out(terminal)
-      {evicted, entries} = Map.pop(state.entries, oldest)
-      retire_fence(state, oldest)
-
-      %{
-        state
-        | terminal: terminal,
-          entries: entries,
-          retired_presentations: Map.delete(state.retired_presentations, oldest),
-          commands: Map.delete(state.commands, evicted.command_id)
-      }
+      forget_entry(%{state | terminal: terminal}, oldest)
     end
+  end
+
+  defp forget_entry(state, ref) do
+    {entry, entries} = Map.pop(state.entries, ref)
+    retire_fence(state, ref)
+
+    %{
+      state
+      | entries: entries,
+        retryable: Map.delete(state.retryable, ref),
+        retired_presentations: Map.delete(state.retired_presentations, ref),
+        commands: Map.delete(state.commands, entry.command_id)
+    }
   end
 
   defp retire_fence(%{managed: nil}, _ref), do: :ok

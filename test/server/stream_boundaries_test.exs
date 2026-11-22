@@ -2,6 +2,7 @@ defmodule Spectre.Server.StreamBoundariesTest do
   use ExUnit.Case, async: true
 
   alias Spectre.Inference.ProviderEvent
+  alias Spectre.Server
   alias Spectre.Server.Stream
 
   defmodule Model do
@@ -16,7 +17,17 @@ defmodule Spectre.Server.StreamBoundariesTest do
   defmodule Transport do
     @behaviour Spectre.Inference.StreamAdapter
     def capabilities(_, _), do: MapSet.new([:stream, :pull_transport])
-    def open(_, opts), do: {:ok, Keyword.fetch!(opts, :events), %{}}
+
+    def open(_, opts) do
+      events =
+        Keyword.get_lazy(opts, :events, fn ->
+          text = Keyword.fetch!(opts, :output)
+          [ProviderEvent.delta(text), ProviderEvent.completed(text)]
+        end)
+
+      {:ok, events, %{}}
+    end
+
     def request_transport_item([]), do: {:error, :disconnected}
 
     def request_transport_item([event | rest]) do
@@ -29,6 +40,35 @@ defmodule Spectre.Server.StreamBoundariesTest do
     def handle_transport({:next, event}, state), do: {:ok, [event], state}
     def handle_transport(_message, state), do: {:ignore, state}
     def cancel(_, _), do: :ok
+  end
+
+  defmodule StreamingActivity do
+    use Spectre.Activity, prompt_root: "test/fixtures/canonical_prompts"
+
+    def handle_start(:report, ctx) do
+      generate(ctx, :safe,
+        input: "report",
+        stream: true,
+        stream_adapter: {Transport, output: "An Activity reply"}
+      )
+    end
+  end
+
+  defmodule ActivityStack do
+    use Spectre.Stack
+    activity(:streaming, StreamingActivity)
+  end
+
+  defmodule ActivityRoot do
+    use Spectre.Server
+
+    def handle_call(:start_stream, _from, ctx),
+      do: {:reply, :queued, start_activity(ctx, :streaming, :report)}
+  end
+
+  defmodule ActivityAgent do
+    use Spectre.Agent, stack: ActivityStack, server: ActivityRoot
+    model(Model)
   end
 
   defp run(events, opts \\ [], request \\ %{planning: false, preview: :off}) do
@@ -124,5 +164,24 @@ defmodule Spectre.Server.StreamBoundariesTest do
              Spectre.Server.Services.generate(request, context,
                stream_adapter: {Transport, events: events}
              )
+  end
+
+  test "Activity preview, preview close and the default reply use the Root envelope" do
+    root = start_supervised!({Server, agent: ActivityAgent, consumer: self()})
+    assert :queued = GenServer.call(root, :start_stream)
+    assert_receive {Server, ^root, {:activity, %{ref: ref}, :started}}, 2_000
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref}, {:output, {:preview, nil, generation, _}}}},
+                   2_000
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref},
+                     {:output, {:preview_end, nil, ^generation, :completed}}}},
+                   2_000
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref}, {:output, {:response, nil, "An Activity reply", _}}}},
+                   2_000
   end
 end

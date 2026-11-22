@@ -112,6 +112,7 @@ defmodule Spectre.Forge.OracleApproval do
   end
 
   @doc "Restores an approval from decoded transport data."
+  @spec from_data(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def from_data(data), do: new(data)
 
   @doc "Returns the stable approval reference."

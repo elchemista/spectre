@@ -15,6 +15,15 @@ defmodule Spectre.Operation.Retry do
           retry_on: [atom()]
         }
 
+  @doc """
+  Builds a retry policy from a struct, keyword list, or atom-keyed map.
+  `nil` selects the defaults.
+
+  Options are `:max_attempts` (including the initial attempt, default `1`),
+  `:strategy` (`:constant`, `:linear`, or `:exponential`), `:base_delay_ms`
+  (default `100`), `:max_delay_ms` (default `30_000`), and `:retry_on`
+  (default `[:error, :crash, :timeout]`).
+  """
   @spec new(t() | map() | keyword() | nil) :: t()
   def new(nil), do: %__MODULE__{}
   def new(%__MODULE__{} = retry), do: validate!(retry)
@@ -31,6 +40,7 @@ defmodule Spectre.Operation.Retry do
     |> validate!()
   end
 
+  @doc "Returns the backoff in milliseconds for the one-based attempt number, capped at the configured maximum."
   @spec delay(t(), pos_integer()) :: non_neg_integer()
   def delay(%__MODULE__{} = retry, attempt) when is_integer(attempt) and attempt > 0 do
     multiplier =
@@ -43,6 +53,7 @@ defmodule Spectre.Operation.Retry do
     min(retry.base_delay_ms * multiplier, retry.max_delay_ms)
   end
 
+  @doc "Checks whether the failure class is retryable and an attempt remains under the policy's maximum."
   @spec retry?(t(), atom(), pos_integer()) :: boolean()
   def retry?(%__MODULE__{} = retry, reason_class, attempt) do
     reason_class in retry.retry_on and attempt < retry.max_attempts

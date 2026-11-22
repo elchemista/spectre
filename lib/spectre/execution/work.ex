@@ -38,27 +38,35 @@ defmodule Spectre.Execution.Work do
   end
 
   @doc "Declares one registered operation step."
+  @spec step(Macro.t(), Macro.t()) :: Macro.t()
   defmacro step(id, opts), do: register_node(:step, id, opts)
 
   @doc "Declares one registered cognitive inference step."
+  @spec infer(Macro.t(), Macro.t()) :: Macro.t()
   defmacro infer(id, opts), do: register_node(:infer, id, opts)
 
   @doc "Declares one pure registered predicate branch."
+  @spec decide(Macro.t(), Macro.t()) :: Macro.t()
   defmacro decide(id, opts), do: register_node(:decide, id, opts)
 
   @doc "Declares one bounded repeat control node."
+  @spec repeat(Macro.t(), Macro.t()) :: Macro.t()
   defmacro repeat(id, opts), do: register_node(:repeat, id, opts)
 
   @doc "Declares a terminal completion node returning current state."
+  @spec finish(Macro.t()) :: Macro.t()
   defmacro finish(id), do: register_node(:complete, id, [])
 
   @doc "Declares a terminal completion node."
+  @spec finish(Macro.t(), Macro.t()) :: Macro.t()
   defmacro finish(id, opts), do: register_node(:complete, id, opts)
 
   @doc "Declares a terminal failure node."
+  @spec fail(Macro.t(), Macro.t()) :: Macro.t()
   defmacro fail(id, reason), do: register_node(:fail, id, reason: reason)
 
   @doc "Declares a pure registered state migration into this program version."
+  @spec migration(Macro.t(), Macro.t()) :: Macro.t()
   defmacro migration(from, opts) do
     quote bind_quoted: [from: from, opts: opts] do
       @spectre_execution_migrations opts |> Map.new() |> Map.put(:from, from)

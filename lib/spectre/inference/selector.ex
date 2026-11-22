@@ -3,6 +3,7 @@ defmodule Spectre.Inference.Selector do
   Behaviour implemented by inference-selection policies.
   """
 
+  @doc "Selects an inference profile from the request, available profiles, context and policy options."
   @callback select(
               Spectre.Inference.Request.t(),
               [Spectre.Inference.Profile.t()],

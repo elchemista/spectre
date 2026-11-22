@@ -58,6 +58,17 @@ defmodule Spectre.Inference.StreamEvent do
   @type kind :: atom()
   @type t :: %__MODULE__{}
 
+  @doc """
+  Builds a validated public stream event with its identity and ordering fence.
+
+  Provide `:inference_id`, `:invocation_id`, `:attempt_id`, `:generation`,
+  `:dispatch_id`, `:stream_epoch`, `:sequence`, `:run_revision` and
+  `:control_revision`. Supply `:payload` for the event content. A `:delta`
+  payload must be valid UTF-8 and defaults to `:provisional` content.
+  The optional `:at` timestamp defaults to system time in milliseconds.
+  `:content_class`, `:usage`, `:usage_quality` and `:metadata` describe the
+  payload and accompanying measurements.
+  """
   @spec new(kind(), keyword()) :: t()
   def new(kind, opts) when kind in @kinds and is_list(opts) do
     event = %__MODULE__{
@@ -88,6 +99,7 @@ defmodule Spectre.Inference.StreamEvent do
     end
   end
 
+  @doc "Checks whether the event ends the public stream. `:inference_completed` can precede a final `:result`."
   @spec terminal?(t()) :: boolean()
   def terminal?(%__MODULE__{kind: kind}),
     do:

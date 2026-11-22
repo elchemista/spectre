@@ -18,8 +18,11 @@ defmodule Spectre.LLM do
   alias Spectre.Provider.Call
   alias Spectre.Provider.Failure
 
+  @doc "Completes a rendered text prompt using the adapter options."
   @callback complete(String.t(), keyword()) ::
               {:ok, String.t() | Response.t() | map()} | {:error, term()}
+
+  @doc "Optionally completes the typed prompt plan while preserving its fragment boundaries."
   @callback complete_plan(Plan.t(), keyword()) ::
               {:ok, String.t() | Response.t() | map()} | {:error, term()}
 

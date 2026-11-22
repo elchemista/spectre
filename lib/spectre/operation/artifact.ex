@@ -16,6 +16,11 @@ defmodule Spectre.Operation.Artifact do
           metadata: map()
         }
 
+  @doc """
+  Builds a portable reference with a required `:kind`. Attributes may also
+  include `:id`, `:uri`, `:digest`, `:media_type`, `:created_at` (in
+  milliseconds), and `:metadata`. Maps accept atom or string keys.
+  """
   @spec new(map() | keyword()) :: t()
   def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()
 
@@ -43,6 +48,7 @@ defmodule Spectre.Operation.Artifact do
     validate!(artifact)
   end
 
+  @doc "Checks the reference's identity, kind, optional URI and metadata fields, timestamp, and portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = artifact) do
     cond do
@@ -72,6 +78,7 @@ defmodule Spectre.Operation.Artifact do
     end
   end
 
+  @doc "Returns a valid artifact reference or raises `ArgumentError`."
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = artifact) do
     case validate(artifact) do

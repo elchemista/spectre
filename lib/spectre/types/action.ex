@@ -50,6 +50,12 @@ defmodule Spectre.Action do
   def new(attrs) when is_map(attrs), do: build(attrs)
   def new(action), do: new(action, [])
 
+  @doc """
+  Builds an action from a reference or applies options to an existing action.
+
+  `:via` selects the provider. `:args` and `:metadata` are maps. Optional
+  `:mode`, `:planned_by` and `:schema_hash` annotate how the action was planned.
+  """
   @spec new(ref() | t(), keyword()) :: t()
   def new(%__MODULE__{} = action, opts) when is_list(opts) do
     attrs =

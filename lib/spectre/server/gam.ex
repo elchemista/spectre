@@ -26,13 +26,24 @@ defmodule Spectre.Server.GAM do
   alias Spectre.GAM.Mind.Turn
   alias Spectre.Server.Store.Port, as: Store
 
+  @type result_reference :: %{
+          decision_ref: String.t(),
+          act_ref: String.t(),
+          outcome_ref: String.t() | nil
+        }
+  @typep effect_result :: {:governed, map()} | {:error, term()}
+  @typep proposal_result :: {:pending, map()} | effect_result()
+
   @doc "Whether the host explicitly connected Server lifecycle observations to its fixed ingress."
+  @spec lifecycle_configured?(term()) :: boolean()
   def lifecycle_configured?(config) when is_list(config),
     do: Keyword.keyword?(config) and Keyword.get(config, :lifecycle) == true
 
   def lifecycle_configured?(_config), do: false
 
   @doc "Records a host lifecycle fact as scoped ingress Evidence, without proposing an Act."
+  @spec record_lifecycle(map(), map(), keyword()) ::
+          {:lifecycle_recorded, map()} | {:error, term()}
   def record_lifecycle(event, context, opts) do
     with {:ok, config} <- config(opts),
          true <- lifecycle_configured?(config),
@@ -44,6 +55,8 @@ defmodule Spectre.Server.GAM do
     end
   end
 
+  @doc "Builds a Candidate for a bound operation and opens consent or submits it to GAM."
+  @spec propose(term(), term(), map(), keyword()) :: proposal_result()
   def propose(operation, args, context, opts) do
     context = Map.put(context, :proposal_metadata, Keyword.get(opts, :proposal_metadata, %{}))
 
@@ -78,6 +91,8 @@ defmodule Spectre.Server.GAM do
     end
   end
 
+  @doc "Interprets a response to a current presentation and acquires approval Evidence before submission."
+  @spec confirm(map(), term(), map(), keyword()) :: effect_result() | {:consent, :rejected}
   def confirm(pending, input, context, opts) do
     with {:ok, config} <- config(opts),
          {:ok, binding} <- binding(config, pending.operation),
@@ -105,6 +120,8 @@ defmodule Spectre.Server.GAM do
     end
   end
 
+  @doc "Records rejection Evidence for the pending presentation and returns `{:consent, :rejected}`."
+  @spec reject(map(), term(), map(), keyword()) :: {:consent, :rejected} | {:error, term()}
   def reject(pending, input, context, opts) do
     with {:ok, config} <- config(opts),
          {:ok, binding} <- binding(config, pending.operation),
@@ -124,8 +141,12 @@ defmodule Spectre.Server.GAM do
     end
   end
 
+  @doc "Shows a fresh presentation of the pending Candidate through the authenticated scope."
+  @spec explain(map(), term(), map(), keyword()) :: {:pending, map()} | {:error, term()}
   def explain(pending, input, context, opts), do: resume(pending, input, context, opts)
 
+  @doc "Resumes a pending Candidate with a fresh presentation and show identity."
+  @spec resume(map(), term(), map(), keyword()) :: {:pending, map()} | {:error, term()}
   def resume(pending, _input, context, opts) do
     with {:ok, config} <- config(opts),
          {:ok, binding} <- binding(config, pending.operation),
@@ -238,6 +259,7 @@ defmodule Spectre.Server.GAM do
   end
 
   @doc "Recovers only an exact previously journaled command through normal kernel admission."
+  @spec recover_command(String.t(), map(), keyword()) :: proposal_result()
   def recover_command(command_id, context, opts) do
     with {:ok, config} <- config(opts),
          {:ok, store} <- journal_store(config),
@@ -286,6 +308,7 @@ defmodule Spectre.Server.GAM do
   end
 
   @doc "Releases an exact command journal only after durable receiver acquisition."
+  @spec release_command(String.t(), map(), keyword()) :: :ok | {:error, term()}
   def release_command(command_id, context, opts) do
     with {:ok, config} <- config(opts) do
       case Keyword.get(config, :store) do
@@ -313,6 +336,7 @@ defmodule Spectre.Server.GAM do
   end
 
   @doc "Returns the durable reference used by both live and delivered results."
+  @spec result_reference(term()) :: {:ok, result_reference()} | {:error, term()}
   def result_reference({:governed, %{decision: decision, act: act, outcome: outcome}})
       when not is_nil(decision) and not is_nil(act) do
     {:ok,
@@ -322,12 +346,14 @@ defmodule Spectre.Server.GAM do
   def result_reference(_result), do: {:error, :durable_result_reference_required}
 
   @doc "Canonical inbox identity for one exact governed result revision."
+  @spec result_key(term()) :: {:ok, String.t()} | {:error, term()}
   def result_key(result) do
     with {:ok, reference} <- result_reference(result),
          do: {:ok, "gam-result:" <> Spectre.GAM.Canonical.Value.digest!(reference)}
   end
 
   @doc "Resolves references through the host's authenticated Scope without executing an effect."
+  @spec resolve_result(result_reference(), map(), keyword()) :: effect_result()
   def resolve_result(reference, context, opts) when is_map(reference) do
     with {:ok, config} <- config(opts),
          {:ok, scope} <- scope(config, context),
@@ -340,6 +366,8 @@ defmodule Spectre.Server.GAM do
   def resolve_result(_reference, _context, _opts), do: {:error, :invalid_result_reference}
 
   @doc "Resolves an exact journaled command's result without submitting its Candidate."
+  @spec resolve_command_result(String.t(), result_reference(), map(), keyword()) ::
+          effect_result()
   def resolve_command_result(command_id, reference, context, opts) do
     with {:ok, config} <- config(opts),
          {:ok, store} <- journal_store(config),

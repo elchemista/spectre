@@ -12,9 +12,14 @@ defmodule Spectre.Server.ActivitiesTest do
   defmodule Fixture do
     use GenServer
 
-    def start_link(opts) do
-      with {:ok, child} <- GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name])) do
-        wait_for_test(child, opts[:barrier], Keyword.fetch!(opts, :observer))
+    def start_link(opts), do: start_link(opts[:start], opts)
+
+    defp start_link(result, _opts) when result in [:ignore, :invalid], do: result
+
+    defp start_link(nil, opts) do
+      with {:ok, child} <- GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name])),
+           {:ok, child} <- wait_for_test(child, opts[:barrier], Keyword.fetch!(opts, :observer)) do
+        if Keyword.has_key?(opts, :info), do: {:ok, child, opts[:info]}, else: {:ok, child}
       end
     end
 
@@ -107,6 +112,77 @@ defmodule Spectre.Server.ActivitiesTest do
 
     assert [{:undefined, ^child, :worker, _}] =
              DynamicSupervisor.which_children(Activities.supervisor(coordinator))
+  end
+
+  test "start recovery only resumes an existing reservation" do
+    {:ok, coordinator} = Activities.start_link()
+    on_exit(fn -> Processes.stop(coordinator) end)
+
+    assert {:error, :activity_start_outcome_unknown} =
+             Activities.recover_start(coordinator, "unknown", nil)
+
+    assert {:error, :unknown_activity} = Activities.resume(coordinator, "unknown")
+    assert nil == Activities.supervisor(coordinator)
+
+    assert {:ok, ref} = Activities.reserve(coordinator, "saved", fixture(), as: :report)
+
+    assert {:ok, %{ref: ^ref, key: :report}} =
+             Activities.recover_start(coordinator, "saved", :report)
+
+    assert_receive {:fixture_activated, ^ref, child}, @timeout
+
+    assert {:ok, %{ref: ^ref, key: :report}} =
+             Activities.recover_start(coordinator, "saved", :report)
+
+    assert {:ok, %{pid: ^child, status: :running}} = Activities.lookup(coordinator, ref)
+    refute_received {:fixture_activated, ^ref, _}
+
+    assert :ok = GenServer.stop(coordinator)
+
+    assert {:error, :activity_start_outcome_unknown} =
+             Activities.recover_start(coordinator, "saved", :report)
+  end
+
+  test "OTP startup info is accepted and ignored or invalid startup never activates" do
+    coordinator = start_coordinator()
+
+    assert {:ok, ref} = Activities.start(coordinator, "info", fixture(info: :lease))
+    assert_receive {:fixture_activated, ^ref, child}, @timeout
+    assert {:ok, %{pid: ^child, status: :running}} = Activities.lookup(coordinator, ref)
+
+    for {return, reason} <- [
+          ignore: :activity_start_ignored,
+          invalid: :invalid_activity_child_start
+        ] do
+      spec = {Fixture, [start: return]}
+      assert {:ok, failed} = Activities.reserve(coordinator, Atom.to_string(return), spec)
+      assert {:error, ^reason} = Activities.resume(coordinator, failed)
+
+      assert {:ok, %{status: :failed, pid: nil, reason: ^reason}} =
+               Activities.lookup(coordinator, failed)
+
+      refute_received {:fixture_activated, ^failed, _}
+    end
+  end
+
+  test "a lost coordinator keeps request failures distinct from missing Activity entries" do
+    coordinator = start_supervised!({Activities, []}, restart: :temporary)
+    input = %Spectre.Input{text: "reply"}
+    :sys.suspend(coordinator)
+
+    request = Task.async(fn -> Activities.input(coordinator, nil, input) end)
+
+    eventually(fn ->
+      {:messages, messages} = Process.info(coordinator, :messages)
+      Enum.any?(messages, &match?({:"$gen_call", _, {:input, nil, ^input}}, &1))
+    end)
+
+    Process.exit(coordinator, :kill)
+    assert {:error, :activity_input_outcome_unknown} = Task.await(request, @timeout)
+    assert {:error, :activity_owner_unavailable} = Activities.input(coordinator, nil, input)
+    assert {:error, :activity_owner_unavailable} = Activities.view(coordinator, "old")
+    assert {:error, :activity_owner_unavailable} = Activities.presentation(coordinator, "old")
+    refute Activities.awaiting_children?(coordinator, "old")
   end
 
   test "an Activity crash leaves sibling work and the direct Root available" do

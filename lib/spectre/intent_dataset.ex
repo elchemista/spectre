@@ -103,7 +103,8 @@ defmodule Spectre.IntentDataset do
     end
   end
 
-  @doc "Looks up intent evidence; no response or authorization is cached."
+  @doc "Looks up intent evidence using exact matches first and optional semantic similarity on a miss."
+  @spec lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def lookup(text, opts \\ []) do
     opts = runtime_options(opts)
 
@@ -148,23 +149,36 @@ defmodule Spectre.IntentDataset do
     end)
   end
 
-  @doc "Stores an eligible labeled example; this does not train a classifier."
+  @doc "Stores an eligible labeled example for later intent lookup."
+  @spec put(String.t(), map(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
   def put(text, result, opts \\ []), do: SemanticCache.put(text, result, runtime_options(opts))
 
-  for {name, arity} <- [
-        examples: 2,
-        get_example: 3,
-        relabel: 4,
-        update_example: 4,
-        delete: 3,
-        verify: 3,
-        snapshot: 2,
-        clear: 2
+  @spec examples(module(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec get_example(module(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec relabel(module(), String.t(), atom(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec update_example(module(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec delete(module(), String.t(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
+  @spec verify(module(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec snapshot(module(), keyword()) :: {:ok, term()} | {:error, term()}
+  @spec clear(module(), keyword()) :: :ok | {:error, term()}
+
+  for {name, arity, doc} <- [
+        {:examples, 2, "Lists the labeled examples available to this Agent."},
+        {:get_example, 3, "Reads one labeled example by its ID."},
+        {:relabel, 4,
+         "Changes an online example to a cacheable route label and marks it verified."},
+        {:update_example, 4,
+         "Changes an online example's `:text`, `:label` or `:verified` value. The configured encoder can refresh its embedding when text changes."},
+        {:delete, 3, "Deletes an online example by its ID."},
+        {:verify, 3, "Marks an online example as verified."},
+        {:snapshot, 2, "Exports the Agent's example dataset and available embeddings."},
+        {:clear, 2,
+         "Clears the Agent's online examples and invalidates its cached lookup indexes."}
       ] do
     args = Macro.generate_arguments(arity - 1, __MODULE__)
     [agent | _rest] = args
 
-    @doc "Delegates the #{name} operation to the configured dataset service."
+    @doc doc
     def unquote(name)(unquote_splicing(args), opts \\ []) do
       apply(SemanticCache, unquote(name), [
         unquote_splicing(args),
@@ -174,6 +188,7 @@ defmodule Spectre.IntentDataset do
   end
 
   @doc "Restores portable labeled examples and compatible stored vectors."
+  @spec load_snapshot(module(), term(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
   def load_snapshot(agent, snapshot, opts \\ []),
     do:
       SemanticCache.load_snapshot(

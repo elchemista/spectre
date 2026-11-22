@@ -2,11 +2,14 @@ defmodule Spectre do
   @moduledoc """
   OTP-native agents with declarative recognition, Server callbacks and governed acts.
 
-  New applications in 0.4 use `Spectre.Stack` for installed capabilities,
+  Applications use `Spectre.Stack` for installed capabilities,
   `Spectre.Agent` for recognition, and `Spectre.Server` for behaviour.
   `Spectre.Server.Runtime` owns the conversation in one GenServer. Governed
   consequences enter the host bridge `Spectre.Server.GAM` and the `Spectre.GAM`
   kernel; a model proposal is neither authority nor proof of execution.
+
+  The root Server can start supervised `Spectre.Activity` executions with
+  their own state, workers and waits inside the same GAM Domain.
 
   With a Server-bound Agent and a host consumer:
 
@@ -136,11 +139,13 @@ defmodule Spectre do
   @doc """
   Summons the Server bound to an Agent, or its legacy Instance/Session runtime.
 
-      {:ok, pid} = Spectre.summon(agent: MyApp.Agent, subject: account.id)
+      {:ok, pid} =
+        Spectre.summon(agent: MyApp.Agent, subject: account.id, consumer: self())
 
   An Agent with `server:` uses the Server runtime. Supplying `:subject` selects
-  its unique local owner. Agents without `server:` preserve the legacy
-  subject-scoped Instance or conversation-scoped Session path.
+  its unique local owner and starts it under the Server supervisor when needed.
+  Other options are passed to `Spectre.Server.start_link/1`. Agents without
+  `server:` use a subject-scoped Instance or a conversation-scoped Session.
   """
   @spec summon(keyword()) :: GenServer.on_start()
   def summon(opts) when is_list(opts) do
@@ -178,9 +183,10 @@ defmodule Spectre do
   end
 
   @doc """
-  Summons a session under a `Spectre.Supervisor`.
+  Summons an Agent under a caller-supplied `Spectre.Supervisor`.
 
-      {:ok, pid} = Spectre.summon(MyApp.SpectreSupervisor, MyApp.Agent, [])
+      {:ok, pid} =
+        Spectre.summon(MyApp.SpectreSupervisor, MyApp.Agent, consumer: self())
   """
   @spec summon(GenServer.server(), module(), keyword()) ::
           DynamicSupervisor.on_start_child()
@@ -267,24 +273,42 @@ defmodule Spectre do
   end
 
   @doc "Returns the currently committed Definition Activation for an Instance."
+  @spec activation(GenServer.server()) :: Spectre.Instance.Activation.t() | nil
   defdelegate activation(instance), to: Spectre.Instance
 
   @doc "Activates a re-read bootstrap or approved governed Candidate through generation CAS."
+  @spec activate(GenServer.server(), Spectre.Definition.Candidate.Ref.t() | String.t(), keyword()) ::
+          {:ok, Spectre.Instance.Activation.t()} | {:error, term()}
   defdelegate activate(instance, candidate_ref, opts \\ []), to: Spectre.Instance
 
   @doc "Rolls activation back to an explicitly selected ancestor Candidate."
+  @spec rollback(GenServer.server(), Spectre.Definition.Candidate.Ref.t() | String.t(), keyword()) ::
+          {:ok, Spectre.Instance.Activation.t()} | {:error, term()}
   defdelegate rollback(instance, candidate_ref, opts \\ []), to: Spectre.Instance
 
   @doc "Returns one active or explicitly selected first-class Skill-state branch."
+  @spec skill_state(GenServer.server(), atom() | String.t(), keyword()) ::
+          {:ok, Spectre.Skill.StateBinding.t()} | {:error, term()}
   defdelegate skill_state(instance, skill_id, opts \\ []), to: Spectre.Instance
 
   @doc "Lists first-class Skill-state branches."
+  @spec skill_state_branches(GenServer.server(), atom() | String.t(), keyword()) ::
+          {:ok, [Spectre.Skill.StateBinding.t()]} | {:error, term()}
   defdelegate skill_state_branches(instance, skill_id, opts \\ []), to: Spectre.Instance
 
   @doc "Updates one active Skill-state branch through schema and revision fences."
+  @spec update_skill_state(GenServer.server(), atom() | String.t(), term(), keyword()) ::
+          {:ok, Spectre.Skill.StateBinding.t()} | {:error, term()}
   defdelegate update_skill_state(instance, skill_id, value, opts \\ []), to: Spectre.Instance
 
   @doc "Transitions one dormant Skill-state branch retention status."
+  @spec transition_skill_state_retention(
+          GenServer.server(),
+          atom() | String.t(),
+          String.t(),
+          Spectre.Skill.StateBinding.retention(),
+          keyword()
+        ) :: {:ok, Spectre.Skill.StateBinding.t()} | {:error, term()}
   defdelegate transition_skill_state_retention(
                 instance,
                 skill_id,
@@ -295,109 +319,219 @@ defmodule Spectre do
               to: Spectre.Instance
 
   @doc "Admits an ownership-based event through the Instance sequencer."
+  @spec admit_event(GenServer.server(), Spectre.Event.Envelope.t() | map() | keyword(), keyword()) ::
+          {:ok, Spectre.Event.Envelope.t()} | {:error, term()}
   defdelegate admit_event(instance, event, opts \\ []), to: Spectre.Instance
 
   @doc "Returns committed admitted Event Envelopes."
+  @spec admitted_events(GenServer.server(), keyword()) :: [Spectre.Event.Envelope.t()]
   defdelegate admitted_events(instance, opts \\ []), to: Spectre.Instance
 
   @doc "Returns quarantined Event Envelopes."
+  @spec quarantined_events(GenServer.server(), keyword()) :: [Spectre.Event.Envelope.t()]
   defdelegate quarantined_events(instance, opts \\ []), to: Spectre.Instance
 
   @doc "Returns the lifecycle axes for one Definition or the active Definition."
+  @spec definition_lifecycle(
+          GenServer.server(),
+          Spectre.Definition.Ref.t() | String.t() | :active
+        ) ::
+          {:ok, Spectre.Instance.Lifecycle.t()} | {:error, term()}
   defdelegate definition_lifecycle(instance, definition_ref \\ :active), to: Spectre.Instance
 
   @doc "Transitions one Definition lifecycle axis."
+  @spec transition_definition_lifecycle(
+          GenServer.server(),
+          Spectre.Definition.Ref.t() | String.t() | :active,
+          Spectre.Instance.Lifecycle.axis(),
+          atom(),
+          keyword()
+        ) :: {:ok, Spectre.Instance.Lifecycle.t()} | {:error, term()}
   defdelegate transition_definition_lifecycle(instance, definition_ref, axis, value, opts \\ []),
     to: Spectre.Instance
 
   @doc "Drains new admission while retaining owned continuations."
+  @spec drain_definition(
+          GenServer.server(),
+          Spectre.Definition.Ref.t() | String.t() | :active,
+          keyword()
+        ) :: {:ok, Spectre.Instance.Lifecycle.t()} | {:error, term()}
   defdelegate drain_definition(instance, definition_ref \\ :active, opts \\ []),
     to: Spectre.Instance
 
   @doc "Revokes current Definition authority."
+  @spec revoke_definition(
+          GenServer.server(),
+          Spectre.Definition.Ref.t() | String.t() | :active,
+          keyword()
+        ) :: {:ok, Spectre.Instance.Lifecycle.t()} | {:error, term()}
   defdelegate revoke_definition(instance, definition_ref \\ :active, opts \\ []),
     to: Spectre.Instance
 
   @doc "Starts a precise Work on an Agent Instance."
+  @spec start_work(GenServer.server(), module(), term(), keyword()) ::
+          {:ok, Spectre.Operation.Ref.t(), Spectre.Operation.View.t()} | {:error, term()}
   defdelegate start_work(instance, controller, input, opts \\ []), to: Spectre.Instance
 
   @doc "Starts a verified data-driven Work materialization on an Agent Instance."
+  @spec start_execution(GenServer.server(), Spectre.Execution.Materialization.t(), keyword()) ::
+          {:ok, Spectre.Operation.Ref.t(), Spectre.Operation.View.t()} | {:error, term()}
   defdelegate start_execution(instance, materialization, opts \\ []), to: Spectre.Instance
 
   @doc "Registers a durable Vigil on an Agent Instance."
+  @spec register_vigil(GenServer.server(), module(), term(), keyword()) ::
+          {:ok, Spectre.Operation.Ref.t(), Spectre.Operation.View.t()} | {:error, term()}
   defdelegate register_vigil(instance, controller, input, opts \\ []), to: Spectre.Instance
 
   @doc "Starts an authorized external controller on the shared runtime."
+  @spec start_controller(GenServer.server(), module(), term(), keyword()) ::
+          {:ok, Spectre.Operation.Ref.t(), Spectre.Operation.View.t()} | {:error, term()}
   defdelegate start_controller(instance, controller, input, opts \\ []), to: Spectre.Instance
 
   @doc "Returns one committed operational-loop view."
+  @spec loop(GenServer.server(), Spectre.Operation.Ref.t() | String.t(), keyword()) ::
+          {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate loop(instance, ref, opts \\ []), to: Spectre.Instance
 
   @doc "Lists visible committed operational loops."
+  @spec loops(GenServer.server(), keyword()) ::
+          {:ok, [Spectre.Operation.View.t()]} | {:error, term()}
   defdelegate loops(instance, opts \\ []), to: Spectre.Instance
 
   @doc "Resolves exactly one visible operational loop without model guessing."
+  @spec resolve_loop(
+          GenServer.server(),
+          Spectre.Operation.Ref.t() | String.t() | map() | keyword() | nil,
+          keyword()
+        ) ::
+          {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate resolve_loop(instance, selector \\ nil, opts \\ []), to: Spectre.Instance
 
   @doc "Requests a reversible loop pause."
+  @spec pause_loop(GenServer.server(), Spectre.Operation.Ref.t() | String.t(), keyword()) ::
+          {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate pause_loop(instance, ref, opts \\ []), to: Spectre.Instance
 
   @doc "Applies a version-fenced loop update."
+  @spec update_loop(GenServer.server(), Spectre.Operation.Ref.t() | String.t(), term(), keyword()) ::
+          {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate update_loop(instance, ref, update, opts \\ []), to: Spectre.Instance
 
   @doc "Applies the durable pause-update-resume sequence."
+  @spec update_and_resume_loop(
+          GenServer.server(),
+          Spectre.Operation.Ref.t() | String.t(),
+          term(),
+          keyword()
+        ) :: {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate update_and_resume_loop(instance, ref, update, opts \\ []), to: Spectre.Instance
 
   @doc "Resumes a reversibly paused loop."
+  @spec resume_loop(GenServer.server(), Spectre.Operation.Ref.t() | String.t(), keyword()) ::
+          {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate resume_loop(instance, ref, opts \\ []), to: Spectre.Instance
 
   @doc "Renews a nonterminal Work, Vigil or controller expiry."
+  @spec renew_loop(
+          GenServer.server(),
+          Spectre.Operation.Ref.t() | String.t(),
+          non_neg_integer(),
+          keyword()
+        ) ::
+          {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate renew_loop(instance, ref, expires_at, opts \\ []), to: Spectre.Instance
 
   @doc "Stops a loop terminally."
+  @spec stop_loop(GenServer.server(), Spectre.Operation.Ref.t() | String.t(), term(), keyword()) ::
+          {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate stop_loop(instance, ref, reason \\ :stopped, opts \\ []), to: Spectre.Instance
 
   @doc "Delivers a declared trigger to a waiting loop."
+  @spec trigger_loop(
+          GenServer.server(),
+          Spectre.Operation.Ref.t() | String.t(),
+          term(),
+          keyword()
+        ) ::
+          {:ok, Spectre.Operation.View.t()} | {:error, term()}
   defdelegate trigger_loop(instance, ref, trigger, opts \\ []), to: Spectre.Instance
 
   @doc "Returns the strict JSON canonical Agent checkpoint."
+  @spec checkpoint(GenServer.server()) :: {:ok, String.t()} | {:error, term()}
   defdelegate checkpoint(instance), to: Spectre.Instance
 
   @doc "Waits for durable persistence of the current canonical revision."
+  @spec flush_checkpoint(GenServer.server(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
   defdelegate flush_checkpoint(instance, opts \\ []), to: Spectre.Instance
 
   @doc "Returns canonical checkpoint persistence status."
+  @spec checkpoint_status(GenServer.server()) :: map()
   defdelegate checkpoint_status(instance), to: Spectre.Instance
 
   @doc "Reconciles an ambiguous canonical-checkpoint write before any retry."
+  @spec reconcile_checkpoint(GenServer.server(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
   defdelegate reconcile_checkpoint(instance, opts \\ []), to: Spectre.Instance
 
   @doc "Returns committed operational events."
+  @spec operation_events(GenServer.server(), keyword()) :: [Spectre.Operation.Event.t()]
   defdelegate operation_events(instance, opts \\ []), to: Spectre.Instance
 
   @doc "Stores revocable proactive-delivery consent."
+  @spec put_delivery_consent(
+          GenServer.server(),
+          Spectre.Operation.Delivery.Consent.t() | map() | keyword(),
+          keyword()
+        ) ::
+          {:ok, Spectre.Operation.Delivery.Consent.t()} | {:error, term()}
   defdelegate put_delivery_consent(instance, consent, opts \\ []), to: Spectre.Instance
 
   @doc "Revokes proactive-delivery consent."
+  @spec revoke_delivery_consent(GenServer.server(), String.t(), keyword()) ::
+          {:ok, Spectre.Operation.Delivery.Consent.t()} | {:error, term()}
   defdelegate revoke_delivery_consent(instance, consent_id, opts \\ []), to: Spectre.Instance
 
   @doc "Runs deterministic proactive-delivery authorization without sending."
+  @spec authorize_delivery(
+          GenServer.server(),
+          String.t(),
+          term(),
+          Spectre.Operation.Delivery.Policy.t() | map() | keyword(),
+          keyword()
+        ) ::
+          {:ok, Spectre.Operation.Delivery.Receipt.t()} | {:error, term()}
   defdelegate authorize_delivery(instance, event_id, destination, policy, opts \\ []),
     to: Spectre.Instance
 
   @doc "Records a Beam/host transport outcome against an authorization receipt."
+  @spec record_delivery(
+          GenServer.server(),
+          String.t(),
+          :authorized | :delivered | :failed,
+          term(),
+          keyword()
+        ) ::
+          {:ok, Spectre.Operation.Delivery.Receipt.t()} | {:error, term()}
   defdelegate record_delivery(instance, receipt_id, outcome, detail, opts \\ []),
     to: Spectre.Instance
 
   @doc "Returns committed delivery audit receipts."
+  @spec delivery_receipts(GenServer.server(), keyword()) :: [
+          Spectre.Operation.Delivery.Receipt.t()
+        ]
   defdelegate delivery_receipts(instance, opts \\ []), to: Spectre.Instance
 
   @doc "Subscribes the caller to committed local operational events."
+  @spec subscribe_operation_events(GenServer.server() | Spectre.Instance.Ref.t(), keyword()) ::
+          {:ok, term()} | {:error, term()}
   defdelegate subscribe_operation_events(instance_or_ref, opts \\ []),
     to: Spectre.Operation.Events,
     as: :subscribe
 
   @doc "Removes the caller's local operational-event subscription."
+  @spec unsubscribe_operation_events(GenServer.server() | Spectre.Instance.Ref.t()) ::
+          :ok | {:error, term()}
   defdelegate unsubscribe_operation_events(instance_or_ref),
     to: Spectre.Operation.Events,
     as: :unsubscribe

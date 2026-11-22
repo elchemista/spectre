@@ -41,7 +41,10 @@ defmodule Spectre.Stack do
 
   @doc """
   Initializes a Stack definition.
+
+  `id:` defaults to the declaring module. `version:` defaults to `1`.
   """
+  @spec __using__(Macro.t()) :: Macro.t()
   defmacro __using__(opts \\ []) do
     opts = eval_opts(opts, __CALLER__)
     id = Keyword.get(opts, :id, __CALLER__.module)
@@ -67,7 +70,11 @@ defmodule Spectre.Stack do
 
   @doc """
   Installs and compiles one package.
+
+  `as:` gives the installation a local ID and defaults to the package
+  manifest's ID. Other options and any DSL block go to the package's compiler.
   """
+  @spec install(Macro.t(), Macro.t()) :: Macro.t()
   defmacro install(package, opts \\ []) do
     {block, opts} = split_block(opts)
     compile_install(package, opts, block, __CALLER__)
@@ -75,12 +82,21 @@ defmodule Spectre.Stack do
 
   @doc """
   Installs a package with explicit options and a package-local DSL block.
+
+  The package compiler interprets the block while the Stack is compiled.
   """
+  @spec install(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro install(package, opts, do: block) do
     compile_install(package, opts, block, __CALLER__)
   end
 
-  @doc "Declares a local Activity that can be started by its name."
+  @doc """
+  Declares a local Activity that can be started by its name.
+
+  The module uses `Spectre.Activity`. `tools:`, `requires:` and
+  `allow_children:` use the same contract as `Spectre.Integration.activity/4`.
+  """
+  @spec activity(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro activity(name, module, options \\ []) do
     binding = %{
       module: Macro.expand(module, __CALLER__),
@@ -95,6 +111,7 @@ defmodule Spectre.Stack do
   end
 
   @doc false
+  @spec __before_compile__(Macro.Env.t()) :: Macro.t()
   defmacro __before_compile__(env) do
     installations =
       env.module
@@ -168,6 +185,10 @@ defmodule Spectre.Stack do
 
   @doc """
   Starts a caller-owned runtime for a Stack.
+
+  The runtime supervises package resources declared by
+  `c:Spectre.Stack.Installable.child_specs/2`. Use the same runtime name in
+  the Server's `:stack_runtime` option when its tools depend on those resources.
   """
   @spec start_link(module(), keyword()) :: Supervisor.on_start()
   def start_link(stack, opts \\ []), do: Runtime.start_link(stack, opts)

@@ -18,5 +18,6 @@ defmodule Spectre.GAM.Attempt.Observer do
           {:ok, Outcome.status(), String.t() | nil, observation()}
           | {:error, term()}
 
+  @doc "Uses the supplied lookup material to verify a late external result for the Act and Attempt."
   @callback observe(Act.t(), Attempt.t(), term(), keyword()) :: result()
 end

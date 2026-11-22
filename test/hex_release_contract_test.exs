@@ -43,6 +43,9 @@ defmodule SpectreHexReleaseContractTest do
     priv/templates/spectre.gen.installable/installable_test.exs.eex
   )
   @public_package_assets ~w(
+    docs/examples/core_agents/run.exs
+    docs/examples/core_agents/core_agents.exs
+    docs/examples/core_agents/prompts/chat.text.heex
     docs/examples/routing-eval.jsonl
   )
   @development_guides ["docs/PLAN_0_4_1.md"]
@@ -239,16 +242,16 @@ defmodule SpectreHexReleaseContractTest do
     end
   end
 
-  test "installation examples target the published version and document source pins" do
+  test "installation examples target the package version and document source pins" do
     readme = File.read!(Path.join(@root, "README.md"))
     installation = File.read!(Path.join(@root, "docs/INSTALLATION.md"))
     llm_guide = File.read!(Path.join(@root, "LLMS.md"))
     changelog = File.read!(Path.join(@root, "CHANGELOG.md"))
 
-    dependency = ~s({:spectre, "~> #{@published}"})
+    dependency = ~s({:spectre, "~> #{@release}"})
     assert readme =~ dependency
     assert installation =~ dependency
-    assert llm_guide =~ "Spectre 0.4 guide"
+    assert llm_guide =~ "Spectre #{@release} guide"
     assert changelog =~ "## 0.3.4 — 2026-08-30"
     assert changelog =~ "## 0.3.3 — 2026-08-23"
     assert installation =~ ~s({:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"})

@@ -12,6 +12,7 @@ defmodule Spectre.Governance.GC.InventoryProvider do
 
   @type config :: module() | {module(), keyword()}
 
+  @doc "Returns a complete inventory for the given Store including its revision, fence and protected references."
   @callback snapshot(Store.config(), keyword()) :: {:ok, map()} | {:error, term()}
 
   @spec load(config(), Store.config(), keyword()) :: {:ok, map()} | {:error, term()}

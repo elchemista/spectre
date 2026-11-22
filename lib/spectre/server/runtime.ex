@@ -86,8 +86,8 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp init_root(state) do
-    state = ActivityBinding.connect(state, :existing)
     send(self(), {__MODULE__, state.control, :recover})
+    state = ActivityBinding.connect(state, :existing)
 
     case start_skills(state) do
       {:ok, state} ->
@@ -410,6 +410,18 @@ defmodule Spectre.Server.Runtime do
              is_integer(state.max_steps) and state.max_steps > 0 do
       raise ArgumentError, "invalid Server identity, assigns or limits"
     end
+
+    validate_activity_limits!(state.opts)
+  end
+
+  defp validate_activity_limits!(opts) do
+    limit = Keyword.get(opts, :max_activities, :infinity)
+
+    unless limit == :infinity or (is_integer(limit) and limit >= 0),
+      do: raise(ArgumentError, "max_activities must be a non-negative integer or :infinity")
+
+    unless Keyword.get(opts, :activity_idle, :notify) in [:notify, :fail, :keep],
+      do: raise(ArgumentError, "activity_idle must be :notify, :fail or :keep")
   end
 
   defp init_application(state) do
@@ -714,9 +726,6 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
-  def handle_call({__MODULE__, :deliver, event_id, tag, result}, from, state),
-    do: handle_call({__MODULE__, :deliver, event_id, tag, result, []}, from, state)
-
   def handle_call({__MODULE__, :deliver, event_id, tag, result, opts}, from, state) do
     cond do
       Delivery.session(state, tag, opts) != :ok ->
@@ -761,14 +770,17 @@ defmodule Spectre.Server.Runtime do
 
   defp activity_query(state, caller, opts, query, fallback) do
     with true <- activity_caller?(state, caller),
-         true <- ActivityBinding.portable_control_opts?(opts),
-         {:ok, {owner, _}} <- ActivityBinding.owner(state, :existing) do
+         :ok <- ActivityBinding.validate_control_opts(opts),
+         :ok <- activity_controls_available(state),
+         {:ok, {owner, _}} <- ActivityBinding.query_owner(state) do
       query.(owner)
     else
       false -> {:error, :activity_not_authorized}
       {:ok, nil} -> fallback
       error -> error
     end
+  catch
+    :exit, _ -> {:error, :activity_owner_unavailable}
   end
 
   defp activity_caller?(state, caller),
@@ -776,10 +788,12 @@ defmodule Spectre.Server.Runtime do
       is_nil(state.activity) and not Keyword.has_key?(state.opts, :skill) and
         (caller == state.consumer or caller in Keyword.get(state.opts, :submitters, []))
 
+  defp activity_controls_available(%{reset_request: nil}), do: :ok
+  defp activity_controls_available(_state), do: {:error, :reset_busy}
+
   defp request_activity_control(state, caller, target, action, opts) do
     with :ok <- ActivityBinding.validate_signal(action),
          :ok <- Checkpoint.validate_value(action),
-         nil <- state.reset_request,
          {:ok, request} <-
            activity_query(
              state,
@@ -791,7 +805,6 @@ defmodule Spectre.Server.Runtime do
       {:reply, {:ok, request}, state}
     else
       {:error, _} = error -> {:reply, error, state}
-      _ -> {:reply, {:error, :activity_busy}, state}
     end
   end
 
@@ -799,10 +812,11 @@ defmodule Spectre.Server.Runtime do
     input = Spectre.Input.new(value)
 
     with true <- activity_caller?(state, caller),
-         {:ok, {owner, _}} <- ActivityBinding.owner(state, :existing),
-         :ok <- Activities.validate_input(owner, ref, target),
-         :ok <- Spectre.Input.validate(input) do
-      accept_input(state, input, nil, nil, {:activity, ref, target})
+         :ok <- activity_controls_available(state),
+         :ok <- Spectre.Input.validate(input),
+         {:ok, {owner, _}} <- ActivityBinding.query_owner(state),
+         :ok <- Activities.input(owner, {ref, target}, %{input | raw: nil}) do
+      {:reply, {:ok, Spectre.Identity.uuid7()}, state}
     else
       {:error, _} = error -> {:reply, error, state}
       {:ok, nil} -> {:reply, {:error, :stale_pending}, state}
@@ -1068,14 +1082,27 @@ defmodule Spectre.Server.Runtime do
     do: handle_continue(value, state)
 
   def handle_info(
+        {__MODULE__, control, :activity_coordinator_down, owner},
+        %{control: control, activity_connection: {owner, _generation}} = state
+      ) do
+    notify(state, {:activities_unavailable, :coordinator_stopped})
+    {:noreply, %{state | activity_connection: nil}}
+  end
+
+  def handle_info(
         {__MODULE__, control, :gam_storage_recovered, recovery},
         %{control: control} = state
       ) do
     {generation, recovery} = Map.pop(recovery, :activity_generation)
     state = storage_recovered(state, recovery)
 
+    state =
+      if is_reference(generation) and match?({:error, _}, state.activity_connection),
+        do: ActivityBinding.connect(state, :existing),
+        else: state
+
     case state.activity_connection do
-      {owner, _} when is_reference(generation) ->
+      {owner, _} when is_pid(owner) and is_reference(generation) ->
         Activities.resume_delivery(owner, control, generation)
         {:noreply, %{state | activity_connection: {owner, generation}}}
 
@@ -1193,6 +1220,17 @@ defmodule Spectre.Server.Runtime do
   end
 
   def handle_info(
+        {Activities, control, :lifecycle, coordinator, id, identity, {:output, _} = event},
+        %{control: control} = state
+      ) do
+    if activity_output_consumer_ready?(state.consumer),
+      do: notify(state, {:activity, identity, event})
+
+    Activities.acknowledge(coordinator, control, id)
+    {:noreply, state}
+  end
+
+  def handle_info(
         {Activities, control, :lifecycle, coordinator, id, identity, event},
         %{control: control} = state
       ) do
@@ -1227,12 +1265,6 @@ defmodule Spectre.Server.Runtime do
       do: {:noreply, %{state | activity: %{activity | paused: true}}}
 
   def handle_info(
-        {Activities, token, :resume, revision},
-        %{activity: %{token: token, revision: revision}} = state
-      ),
-      do: {:noreply, resume_activity(state, revision)}
-
-  def handle_info(
         {Activities, token, :signal, revision, signal},
         %{activity: %{token: token, ready: true, revision: current}} = state
       )
@@ -1248,6 +1280,21 @@ defmodule Spectre.Server.Runtime do
       when revision >= current do
     state = resume_activity(state, revision)
     {:stop, :normal, state}
+  end
+
+  def handle_info(
+        {Activities, token, :child_lifecycle, _identity, _event} = message,
+        %{activity: %{token: token, paused: true}} = state
+      ),
+      do: {:noreply, defer_activity(state, message)}
+
+  def handle_info(
+        {Activities, token, :child_lifecycle, %{event_id: id} = identity, event},
+        %{activity: %{token: token, ready: true}} = state
+      ) do
+    state = conversation(state, :handle_activity, [identity, event], nil)
+    ActivityBinding.report(state, {:child_ack, id})
+    {:noreply, finish(state)}
   end
 
   def handle_info(
@@ -1385,18 +1432,24 @@ defmodule Spectre.Server.Runtime do
     do: update_in(state.activity.deferred, &[message | &1])
 
   defp finish_activity(state, result) do
-    if ActivityBinding.finish(state, result) != :superseded,
-      do: send(self(), {Activities, state.activity.token, :stop})
+    if state.activity.finishing or ActivityBinding.finish(state, result) == :superseded do
+      state
+    else
+      send(self(), {Activities, state.activity.token, :stop})
+      put_in(state.activity.finishing, true)
+    end
   end
 
   defp resume_activity(%{activity: activity} = state, revision) do
-    state =
-      if revision == activity.revision,
-        do: state,
-        else: retire_activity_pending(state)
-
     Enum.each(Enum.reverse(activity.deferred), &send(self(), &1))
-    %{state | activity: %{activity | revision: revision, paused: false, deferred: []}}
+    state = %{state | activity: %{activity | paused: false, deferred: []}}
+
+    if revision == activity.revision do
+      state
+    else
+      state = retire_activity_pending(state)
+      %{state | activity: %{state.activity | revision: revision, steps: 0, idle_notified: false}}
+    end
   end
 
   defp retire_activity_pending(state) do
@@ -1535,20 +1588,20 @@ defmodule Spectre.Server.Runtime do
   def code_change(old_vsn, state, extra) do
     {ctx, dispatch} = context(state, nil)
 
-    case state.server.code_change(old_vsn, ctx, extra) do
-      {:ok, returned} ->
-        validate_context!(returned, dispatch)
-        if returned.commands != [], do: raise(ArgumentError, "code_change cannot start commands")
-        Spectre.Server.Contracts.validate_assigns!(state.server, returned.assigns)
-        Spectre.Server.Contracts.validate_retained!(state.server, state)
-        state = %{state | assigns: returned.assigns}
-        state = Map.put(state, :tool_bindings, Tool.bindings!(state))
-        state = state |> Tool.validate_persisted!() |> Checkpoint.refresh_fingerprint()
-        validate_tool_state!(state)
-        {:ok, state}
+    upgraded =
+      state
+      |> Map.put(:tool_bindings, Tool.bindings!(state))
+      |> Checkpoint.refresh_fingerprint()
 
-      {:error, _} = error ->
-        error
+    with :ok <- Checkpoint.validate_hot_upgrade(state, upgraded),
+         {:ok, returned} <- state.server.code_change(old_vsn, ctx, extra) do
+      validate_context!(returned, dispatch)
+      if returned.commands != [], do: raise(ArgumentError, "code_change cannot start commands")
+      Spectre.Server.Contracts.validate_assigns!(state.server, returned.assigns)
+      Spectre.Server.Contracts.validate_retained!(state.server, state)
+      upgraded = Tool.validate_persisted!(%{upgraded | assigns: returned.assigns})
+      validate_tool_state!(upgraded)
+      {:ok, upgraded}
     end
   end
 
@@ -1648,9 +1701,6 @@ defmodule Spectre.Server.Runtime do
       acquire_input_event(state, event, invocation, waiting?, queued? and not busy?)
     end
   end
-
-  defp target_input(event, {:activity, ref, pending}),
-    do: Map.merge(event, %{target_pending: nil, target_activity: {ref, pending}})
 
   defp target_input(event, pending), do: Map.put(event, :target_pending, pending)
 
@@ -1876,10 +1926,10 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp activity_decision_reply(pid, message) do
-    case Failure.capture(fn -> GenServer.call(pid, message, 2_500) end) do
-      {:ok, result} -> result
-      {:error, _} -> {:error, :activity_unavailable}
-    end
+    GenServer.call(pid, message, 2_500)
+  catch
+    :exit, {:timeout, _} -> {:error, :decision_outcome_unknown}
+    :exit, _ -> {:error, :activity_unavailable}
   end
 
   @spec start_decision_query(map(), pid(), GenServer.from(), binary(), atom()) :: {:ok, pid()}
@@ -1935,7 +1985,14 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp call_skill(child, token, request) do
-    Failure.capture(fn -> GenServer.call(child, {__MODULE__, :relay, token, request}, 2_000) end)
+    Failure.capture(fn -> skill_reply(child, token, request) end)
+  end
+
+  defp skill_reply(child, token, request) do
+    GenServer.call(child, {__MODULE__, :relay, token, request}, 2_000)
+  catch
+    :exit, {:timeout, _} when elem(request, 0) == :decision ->
+      {:error, :decision_outcome_unknown}
   end
 
   @spec accept_relay_input(map(), term(), keyword(), binary() | nil) :: tuple()
@@ -2016,6 +2073,9 @@ defmodule Spectre.Server.Runtime do
 
   defp validate_legacy_pending(_state, _id, _revision), do: {:error, :stale_pending}
 
+  # A checkpoint made before direct delivery can still contain an addressed answer.
+  defp begin_input(state, %{target_activity: _} = event), do: prepared_input(state, event)
+
   defp begin_input(state, event) do
     history =
       Enum.take(
@@ -2035,6 +2095,9 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp prepared_input(state, %{delegated: true} = event), do: route(state, event)
+
+  defp prepared_input(state, %{target_activity: _} = event),
+    do: dispatch_focused_input(state, event) |> finish()
 
   defp prepared_input(state, %{target_pending: {_id, _revision} = target} = event) do
     if InputWait.find(state.pending, target),
@@ -2084,9 +2147,17 @@ defmodule Spectre.Server.Runtime do
   defp dispatch_focused_input(state, event) do
     case Map.get(state.pending, state.foreground) do
       nil ->
-        if relay_activity_input(state, nil, event.input) == :ok,
-          do: state,
-          else: route(state, event)
+        case relay_activity_input(state, nil, event.input) do
+          :ok ->
+            state
+
+          :unmatched ->
+            route(state, event)
+
+          error ->
+            notify(state, {:activity_input_error, event.id, error})
+            state
+        end
 
       %{id: id, input_wait: %{accept: accept} = wait} ->
         if InputWait.live?(wait) and InputWait.matches?(accept, event.input.text),
@@ -2117,15 +2188,25 @@ defmodule Spectre.Server.Runtime do
   end
 
   defp configure_input_wait(state, %{status: :foreground} = pending, opts, event) do
-    if state.activity || FlowPort.owner(flow_route(event)) || opts[:accept] || opts[:prompt] do
-      pending = if opts[:accept], do: pending, else: %{pending | status: :background}
-      InputWait.put(pending, state.active_command, opts)
+    if targeted_input_wait?(state, opts, event) do
+      status = if is_nil(opts[:accept]), do: :background, else: :foreground
+      InputWait.put(%{pending | status: status}, state.active_command, opts)
     else
       pending
     end
   end
 
   defp configure_input_wait(_state, pending, _opts, _event), do: pending
+
+  defp foreground_wait?(state, opts, event),
+    do:
+      Keyword.get(opts, :foreground, false) and
+        (not targeted_input_wait?(state, opts, event) or not is_nil(opts[:accept]))
+
+  defp targeted_input_wait?(state, opts, event),
+    do:
+      not is_nil(state.activity) or not is_nil(FlowPort.owner(flow_route(event))) or
+        not is_nil(opts[:accept]) or not is_nil(opts[:prompt])
 
   defp publish_input_wait(state, %{input_wait: wait}) do
     state = Checkpoint.save(state)
@@ -2220,9 +2301,8 @@ defmodule Spectre.Server.Runtime do
     after_interrupt(state, event)
   end
 
-  defp apply_worker_result(state, %{kind: kind, event: event}, {:error, reason})
-       when kind in [:interrupt, :pre_route],
-       do: conversation(state, :handle_result, [kind, {:error, reason}], event)
+  defp apply_worker_result(state, %{kind: :pre_route, event: event}, {:error, reason}),
+    do: conversation(state, :handle_result, [:pre_route, {:error, reason}], event)
 
   defp apply_worker_result(state, %{kind: :prepare_input, event: event}, {:ok, input, memory}) do
     event =
@@ -2341,7 +2421,7 @@ defmodule Spectre.Server.Runtime do
       ActivityBinding.report(state, {:pending, pending.presentation.ref, activity_show_ref(data)})
     end
 
-    notify(state, {:pending, event_id(event), id})
+    unless state.activity, do: notify(state, {:pending, event_id(event), id})
 
     state
     |> arm_pending_timer(pending)
@@ -2483,7 +2563,19 @@ defmodule Spectre.Server.Runtime do
 
   defp update_current(state, _event), do: state
 
+  defp conversation(%{activity: %{finishing: true}} = state, _callback, _args, _event), do: state
+
+  defp conversation(
+         %{activity: %{steps: steps}, max_steps: limit} = state,
+         _callback,
+         _args,
+         _event
+       )
+       when steps >= limit,
+       do: finish_activity(state, {:failed, :step_limit})
+
   defp conversation(state, callback, args, event) do
+    state = if state.activity, do: update_in(state.activity.steps, &(&1 + 1)), else: state
     event = if event, do: %{event | steps: event.steps + 1}, else: nil
     state = update_current(state, event)
     {ctx, dispatch} = context(state, event)
@@ -2615,9 +2707,10 @@ defmodule Spectre.Server.Runtime do
   defp stale_pending(_state, _pending, _event), do: nil
 
   defp quarantine_callback(state, callback, event, reason) do
-    if state.activity do
-      finish_activity(state, {:failed, :activity_callback_failed})
-    end
+    state =
+      if state.activity,
+        do: finish_activity(state, {:failed, :activity_callback_failed}),
+        else: state
 
     state = discard_quarantined_following(state)
     {state, failure} = Failure.quarantine(state, callback, event, reason)
@@ -2970,14 +3063,14 @@ defmodule Spectre.Server.Runtime do
        do: raise(ArgumentError, "an Activity terminal command must end its own callback")
 
     validate_unique_waits!(state, commands)
-    validate_foreground_waits!(state, commands)
+    validate_foreground_waits!(state, commands, event)
     Enum.each(commands, &validate_stateful_command!(state, &1, event))
   end
 
-  defp validate_foreground_waits!(state, commands) do
+  defp validate_foreground_waits!(state, commands, event) do
     foreground =
       Enum.count(commands, fn command ->
-        command.kind == :await_reply and Keyword.get(command.opts, :foreground, false)
+        command.kind == :await_reply and foreground_wait?(state, command.opts, event)
       end)
 
     if foreground > 1 or (foreground > 0 and not is_nil(state.foreground)),
@@ -3122,7 +3215,6 @@ defmodule Spectre.Server.Runtime do
        when kind in [:complete_activity, :fail_activity] do
     status = if kind == :complete_activity, do: :completed, else: :failed
     finish_activity(state, {status, value})
-    state
   end
 
   defp execute(state, %Command{kind: :tool_call, args: [identity, args], opts: opts}, event) do
@@ -3360,6 +3452,7 @@ defmodule Spectre.Server.Runtime do
       identity: state.identity,
       skill: Keyword.get(state.opts, :skill),
       activity: ActivityBinding.public(state),
+      activity_output: ActivityBinding.output_sink(state),
       assigns: state.assigns,
       input: if(event, do: event.input),
       interaction: event_id(event),
@@ -3381,6 +3474,7 @@ defmodule Spectre.Server.Runtime do
           :assigns,
           :gam,
           :checkpoint,
+          :activity,
           :consumer,
           :submitters,
           :services,
@@ -3454,7 +3548,7 @@ defmodule Spectre.Server.Runtime do
     if not :queue.is_empty(state.queue) and not resolving_pending?(state),
       do: send(self(), {__MODULE__, state.control, :pump})
 
-    state
+    check_activity_idle(state)
   end
 
   defp finish(state) do
@@ -3470,8 +3564,36 @@ defmodule Spectre.Server.Runtime do
       state
     else
       send(self(), {__MODULE__, state.control, :pump})
-      state |> flush_memory() |> Map.put(:current, nil) |> Checkpoint.save()
+
+      state
+      |> flush_memory()
+      |> Map.put(:current, nil)
+      |> Checkpoint.save()
+      |> check_activity_idle()
     end
+  end
+
+  defp check_activity_idle(
+         %{activity: %{ready: true, paused: false, finishing: false, idle_notified: false}} =
+           state
+       )
+       when map_size(state.workers) == 0 and map_size(state.pending) == 0 and
+              map_size(state.outbox) == 0 and map_size(state.inbox) == 0 do
+    policy = Keyword.get(state.opts, :activity_idle, :notify)
+
+    if policy != :keep and :queue.is_empty(state.queue) and
+         not ActivityBinding.awaiting_children?(state),
+       do: activity_idle(state, policy),
+       else: state
+  end
+
+  defp check_activity_idle(state), do: state
+
+  defp activity_idle(state, :fail), do: finish_activity(state, {:failed, :activity_idle})
+
+  defp activity_idle(state, :notify) do
+    ActivityBinding.report(state, {:idle, state.activity.revision})
+    put_in(state.activity.idle_notified, true)
   end
 
   defp flush_memory(state) do
@@ -3684,6 +3806,7 @@ defmodule Spectre.Server.Runtime do
     execute_entries(state, entries)
   end
 
+  defp execute_entries(%{activity: %{finishing: true}} = state, _entries), do: state
   defp execute_entries(state, []), do: state
 
   defp execute_entries(state, [{id, entry} | remaining]) do
@@ -4045,7 +4168,8 @@ defmodule Spectre.Server.Runtime do
 
   defp mark_execution_started(state, id, entry) do
     if (governed?(entry.command.kind) and not local_reply_resume?(state, entry)) or
-         Tool.never?(entry.command) or entry.command.kind in [:delegate, :delegate_route] do
+         Tool.never?(entry.command) or
+         entry.command.kind in [:delegate, :delegate_route, :start_activity] do
       entry = Map.put(entry, :execution_started, true)
       %{state | outbox: Map.put(state.outbox, id, entry)} |> Checkpoint.save()
     else
@@ -4073,6 +4197,11 @@ defmodule Spectre.Server.Runtime do
     state = %{state | outbox: Map.delete(state.outbox, worker.command_id)} |> Checkpoint.save()
 
     case result do
+      {:governed, %{act: act, outcome: %{status: status}}}
+      when not is_nil(act) and status != :ambiguous ->
+        release_superseded_journal(state, worker)
+        conversation(state, :handle_signal, [{:effect, result}], nil)
+
       {:governed, %{act: act}} when not is_nil(act) ->
         conversation(state, :handle_signal, [{:effect, result}], nil)
 
@@ -4218,6 +4347,12 @@ defmodule Spectre.Server.Runtime do
 
   defp tool_failure(%{kind: :await_reply, input_wait: true}, :timeout), do: {:error, :expired}
 
+  defp tool_failure(%{kind: :start_activity}, :timeout),
+    do: {:error, :activity_start_outcome_unknown}
+
+  defp tool_failure(%{kind: kind}, :timeout) when kind in [:signal_activity, :cancel_activity],
+    do: {:error, :activity_control_outcome_unknown}
+
   defp tool_failure(_worker, reason), do: {:error, reason}
 
   defp complete_delivery(state, worker, {:governed, _} = result) do
@@ -4306,6 +4441,16 @@ defmodule Spectre.Server.Runtime do
     if governed?(worker.kind),
       do: release_command_journal(state, Map.get(worker, :command_id)),
       else: state
+  end
+
+  defp release_superseded_journal(%{gam: {Managed, opts}} = state, %{command_id: id}) do
+    # The Domain has recorded the effect and the Activity checkpoint no longer
+    # references this command. Cleanup can finish after the Activity exits.
+    context = %{activity: ActivityBinding.public(state)}
+
+    Task.Supervisor.start_child(Spectre.Server.TaskSupervisor, fn ->
+      Managed.release_command(id, context, bridge_config: opts)
+    end)
   end
 
   defp release_command_journal(state, nil), do: state
@@ -4460,6 +4605,9 @@ defmodule Spectre.Server.Runtime do
   @spec recover_started_entry(map(), binary(), map()) :: map()
   defp recover_started_entry(state, id, entry) do
     cond do
+      entry.command.kind == :start_activity ->
+        recover_activity_start(state, id, entry)
+
       entry.command.kind in [:delegate, :delegate_route] ->
         worker = %{
           kind: :delegate,
@@ -4488,6 +4636,34 @@ defmodule Spectre.Server.Runtime do
 
       true ->
         execute_entry(state, id, entry)
+    end
+  end
+
+  defp recover_activity_start(state, id, entry) do
+    opts = entry.command.opts
+    state = ActivityBinding.connect(state, :existing)
+
+    case state.activity_connection do
+      {coordinator, _generation} when is_pid(coordinator) ->
+        worker(
+          %{state | active_command: id},
+          :start_activity,
+          opts[:on_result],
+          entry.event,
+          opts,
+          fn -> Activities.recover_start(coordinator, id, opts[:as]) end
+        )
+        |> Map.put(:active_command, nil)
+
+      _ ->
+        command = %{
+          kind: :start_activity,
+          tag: opts[:on_result],
+          event: entry.event,
+          command_id: id
+        }
+
+        receive_result(state, command, {:error, :activity_start_outcome_unknown})
     end
   end
 
@@ -4562,6 +4738,9 @@ defmodule Spectre.Server.Runtime do
   defp recover_idle_current(state, _phase), do: start_input_preparation(state, state.current)
 
   defp start_input_preparation(state, %{skill_dispatch: _} = event),
+    do: prepared_input(state, event)
+
+  defp start_input_preparation(state, %{target_activity: _} = event),
     do: prepared_input(state, event)
 
   defp start_input_preparation(state, event) do
@@ -4843,6 +5022,26 @@ defmodule Spectre.Server.Runtime do
 
   def notify_consumer(_, _, _, _), do: :ok
 
+  @doc false
+  @spec notify_service(map(), term()) :: term()
+  def notify_service(%{activity_output: sink}, event) when not is_nil(sink),
+    do: Activities.output(sink, event)
+
+  def notify_service(%{activity: activity}, _event) when not is_nil(activity), do: :ok
+
+  def notify_service(context, event),
+    do:
+      notify_consumer(
+        context.consumer,
+        context[:runtime],
+        event,
+        if(context[:skill], do: context[:session])
+      )
+
+  defp notify(%{activity: %{}, consumer: pid} = state, event) when is_pid(pid) do
+    if sink = ActivityBinding.output_sink(state), do: Activities.output(sink, event)
+  end
+
   defp notify(%{consumer: pid} = state, event) when is_pid(pid),
     do:
       notify_consumer(
@@ -4853,4 +5052,15 @@ defmodule Spectre.Server.Runtime do
       )
 
   defp notify(_, _), do: :ok
+
+  # The consumer does not ACK the public API. Shed lossy Activity output when
+  # a local consumer is behind, independently of Root lifecycle delivery.
+  defp activity_output_consumer_ready?(pid) when is_pid(pid) and node(pid) == node() do
+    case Process.info(pid, :message_queue_len) do
+      {:message_queue_len, count} -> count < 256
+      nil -> false
+    end
+  end
+
+  defp activity_output_consumer_ready?(pid), do: is_pid(pid)
 end

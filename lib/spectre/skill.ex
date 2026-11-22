@@ -26,7 +26,11 @@ defmodule Spectre.Skill do
 
   @doc """
   Initializes a Skill definition using the shared Spectre DSL compiler.
+
+  `id:` identifies the definition, while the mount's `as:` selects its local
+  scope. `server:` is optional and binds a supervised callback module.
   """
+  @spec __using__(Macro.t()) :: Macro.t()
   defmacro __using__(opts) when is_list(opts) do
     opts = Keyword.put(opts, :__spectre_kind__, :skill)
 

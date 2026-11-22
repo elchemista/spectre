@@ -8,12 +8,31 @@ defmodule Spectre.Server.ActivityBinding do
   @spec owner(map(), :existing | :start) :: {:ok, {pid(), reference()} | nil} | {:error, term()}
   def owner(%{activity: %{owner: owner, token: token}}, _mode), do: {:ok, {owner, token}}
 
-  def owner(%{activity_connection: {pid, _token} = connection}, _mode),
-    do: {:ok, if(Process.alive?(pid), do: connection)}
+  def owner(%{activity_connection: {pid, _token} = connection}, _mode) when is_pid(pid) do
+    if Process.alive?(pid), do: {:ok, connection}, else: {:error, :activity_owner_unavailable}
+  end
 
   def owner(%{activity_connection: nil}, _mode), do: {:ok, nil}
-  def owner(%{managed_owner: pid}, mode) when is_pid(pid), do: Managed.activity_owner(pid, mode)
+
+  def owner(%{activity_connection: {:error, _} = error}, _mode), do: error
+
+  def owner(%{managed_owner: pid}, mode) when is_pid(pid) do
+    Managed.activity_owner(pid, mode)
+  catch
+    :exit, _ -> {:error, :activity_owner_unavailable}
+  end
+
   def owner(_state, _mode), do: {:ok, nil}
+
+  @spec query_owner(map()) :: {:ok, {pid(), reference()} | nil} | {:error, term()}
+  def query_owner(state) do
+    case owner(state, :existing) do
+      {:error, _} -> refresh_owner(state, :existing)
+      result -> result
+    end
+  end
+
+  defp refresh_owner(state, mode), do: state |> Map.delete(:activity_connection) |> owner(mode)
 
   @spec start(map(), term(), term(), keyword()) :: {:ok, map()} | {:error, term()}
   def start(state, type, args, opts) do
@@ -39,6 +58,10 @@ defmodule Spectre.Server.ActivityBinding do
   defp ordered_scope(scope), do: scope |> Enum.uniq() |> Enum.sort()
 
   @spec control(map(), term(), term(), keyword()) :: term()
+  def control(_state, reason, _action, _opts)
+      when reason in [:unknown_activity, :activity_owner_unavailable],
+      do: {:error, reason}
+
   def control(state, target, action, opts) do
     case owner(state, :existing) do
       {:ok, {pid, _}} -> Activities.control(pid, target, state.active_command, action, opts)
@@ -49,9 +72,9 @@ defmodule Spectre.Server.ActivityBinding do
 
   @spec connect(map(), :existing | :start) :: map()
   def connect(state, mode) do
-    case owner(Map.delete(state, :activity_connection), mode) do
+    case refresh_owner(state, mode) do
       {:ok, connection} -> Map.put(state, :activity_connection, connection)
-      {:error, _} -> Map.put(state, :activity_connection, nil)
+      {:error, _} = error -> Map.put(state, :activity_connection, error)
     end
   end
 
@@ -59,12 +82,13 @@ defmodule Spectre.Server.ActivityBinding do
   def resolve(state, %Command{kind: kind, args: [target | rest]} = command)
       when kind in [:signal_activity, :cancel_activity] do
     {target, opts} =
-      with {:ok, {pid, _}} <- owner(state, :existing),
+      with {:ok, {pid, _}} <- query_owner(state),
            {:ok, %{ref: ref} = entry} <- Activities.view(pid, target),
            true <- can_control?(state.activity, entry) do
         {ref, Keyword.put_new(command.opts, :if_revision, entry.revision)}
       else
-        _ -> {"unknown-activity", command.opts}
+        {:error, :activity_owner_unavailable} -> {:activity_owner_unavailable, command.opts}
+        _ -> {:unknown_activity, command.opts}
       end
 
     %{command | args: [target | rest], opts: opts}
@@ -94,11 +118,28 @@ defmodule Spectre.Server.ActivityBinding do
   def public(%{activity: %{} = activity}), do: Map.take(activity, [:ref, :key, :revision])
   def public(_state), do: nil
 
+  @doc false
+  @spec output_sink(map()) :: {pid(), binary(), reference(), non_neg_integer()} | nil
+  def output_sink(%{
+        activity: %{owner: owner, ref: ref, revision: revision, output_token: token},
+        consumer: consumer
+      })
+      when is_pid(consumer),
+      do: {owner, ref, token, revision}
+
+  def output_sink(_state), do: nil
+
   @spec report(map(), term()) :: :ok
   def report(%{activity: %{owner: owner, ref: ref}}, event),
     do: Activities.report(owner, ref, event)
 
   def report(_state, _event), do: :ok
+
+  @spec awaiting_children?(map()) :: boolean()
+  def awaiting_children?(%{activity: %{children: false}}), do: false
+
+  def awaiting_children?(%{activity: %{owner: owner, ref: ref}}),
+    do: Activities.awaiting_children?(owner, ref)
 
   @spec finish(map(), term()) :: :ok | :superseded | {:error, atom()}
   def finish(%{activity: %{owner: owner, ref: ref, revision: revision}}, event),
@@ -107,18 +148,23 @@ defmodule Spectre.Server.ActivityBinding do
   @spec presentation(map(), binary()) ::
           {:ok, pid(), reference(), non_neg_integer()} | {:error, term()} | :error | {:ok, nil}
   def presentation(state, ref) do
-    with {:ok, {pid, _}} <- owner(state, :existing), do: Activities.presentation(pid, ref)
+    with {:ok, {pid, _}} <- query_owner(state), do: Activities.presentation(pid, ref)
   end
 
   @spec allowed_tool?(map(), term()) :: boolean()
   def allowed_tool?(%{activity: %{scope: scope}}, ref), do: scope == :all or ref in scope
   def allowed_tool?(_state, _ref), do: true
 
-  @spec portable_control_opts?(keyword()) :: boolean()
-  def portable_control_opts?(opts),
-    do:
-      Keyword.keyword?(opts) and Keyword.keys(opts) -- [:if_revision] == [] and
-        Enum.all?(opts, fn {:if_revision, revision} -> is_integer(revision) and revision >= 0 end)
+  @spec validate_control_opts(term()) ::
+          :ok | {:error, :invalid_activity_options | :invalid_activity_revision}
+  def validate_control_opts([]), do: :ok
+
+  def validate_control_opts(if_revision: revision)
+      when is_integer(revision) and revision >= 0,
+      do: :ok
+
+  def validate_control_opts(if_revision: _revision), do: {:error, :invalid_activity_revision}
+  def validate_control_opts(_opts), do: {:error, :invalid_activity_options}
 
   @spec validate_signal(term()) :: :ok | {:error, :reserved_activity_signal}
   def validate_signal({:signal, {:effect, _}}), do: {:error, :reserved_activity_signal}
@@ -199,7 +245,10 @@ defmodule Spectre.Server.ActivityBinding do
       managed: owner,
       ready: false,
       paused: false,
-      deferred: []
+      deferred: [],
+      steps: 0,
+      idle_notified: false,
+      finishing: false
     }
 
     opts =
@@ -211,6 +260,7 @@ defmodule Spectre.Server.ActivityBinding do
         :checkpoint,
         :payload_store,
         :max_steps,
+        :activity_idle,
         :worker_timeout
       ])
       |> Keyword.merge(

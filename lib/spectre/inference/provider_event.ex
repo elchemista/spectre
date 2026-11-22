@@ -26,6 +26,15 @@ defmodule Spectre.Inference.ProviderEvent do
 
   @type t :: %__MODULE__{}
 
+  @doc """
+  Builds a `:started`, `:delta`, `:usage`, `:completed` or `:failed` provider event.
+
+  Supply `:payload` according to the kind. A delta needs binary bytes,
+  completion needs a normalized `Spectre.Inference.Response`, and failure needs
+  a reason. The optional `:provider_sequence`, `:cursor` and
+  `:provider_request_id` correlate provider events. `:usage`, `:usage_quality`
+  and `:metadata` carry counters, their quality and provider metadata.
+  """
   @spec new(atom(), keyword()) :: t()
   def new(kind, opts \\ []) when kind in @kinds and is_list(opts) do
     event = %__MODULE__{
@@ -42,10 +51,12 @@ defmodule Spectre.Inference.ProviderEvent do
     validate!(event)
   end
 
+  @doc "Builds a delta from provider bytes, including partial UTF-8 codepoints."
   @spec delta(binary(), keyword()) :: t()
   def delta(text, opts \\ []) when is_binary(text),
     do: new(:delta, Keyword.put(opts, :payload, text))
 
+  @doc "Normalizes the final response and builds a completion event."
   @spec completed(Response.t() | String.t() | map(), keyword()) :: t()
   def completed(response, opts \\ []),
     do: new(:completed, Keyword.put(opts, :payload, Response.new(response)))

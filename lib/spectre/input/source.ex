@@ -34,6 +34,7 @@ defmodule Spectre.Input.Source do
           metadata: map()
         }
 
+  @doc "Builds and validates an input origin from a struct, map or keyword list."
   @spec new(t() | map() | keyword()) :: t()
   def new(%__MODULE__{} = source), do: source |> Map.from_struct() |> new()
   def new(attrs) when is_list(attrs), do: attrs |> Map.new() |> new()

@@ -1,9 +1,12 @@
 defmodule Spectre.Server.CheckpointRouteMigrationTest do
   use ExUnit.Case, async: true
+  alias Spectre.Server
   alias Spectre.Server.{Checkpoint, Command, Router}
+  alias Spectre.Server.Store.Disk
 
   @old_key {:support, :pricing}
   @new_key {[:support, :billing], :quote}
+  @stable_key {:support, :hours}
 
   defmodule App do
     use Spectre.Server
@@ -32,6 +35,8 @@ defmodule Spectre.Server.CheckpointRouteMigrationTest do
 
   def invalid_mapping(saved, _metadata), do: {:ok, saved, [@old_key, @new_key]}
 
+  def reject_migration(_saved, _metadata), do: {:error, :unsupported_application_snapshot}
+
   test "an explicit mapping moves every durable routing hint while preserving governed facts" do
     {store, agent, saved} = saved_conversation()
     recompile(agent, :renamed)
@@ -39,6 +44,11 @@ defmodule Spectre.Server.CheckpointRouteMigrationTest do
 
     {:ok, @new_key, routed} = restored.inbox["route"].result
     {:interrupt, @new_key, interrupted} = restored.inbox["interrupt"].result
+    {:ok, @stable_key, unaffected} = restored.inbox["unaffected"].result
+    assert unaffected.route.label == :hours
+    refute Map.has_key?(unaffected, :previous_route_keys)
+    assert restored.inbox["unmatched"].worker.event == nil
+    assert restored.inbox["unmatched"].result == {:unmatched, %{scope: :agent}}
 
     locations = [
       restored.current.routing,
@@ -100,6 +110,59 @@ defmodule Spectre.Server.CheckpointRouteMigrationTest do
 
     assert_raise ArgumentError, ~r/checkpoint_route_not_found/, fn ->
       restore(store, agent, :migrate_without_mapping)
+    end
+  end
+
+  test "a corrupt route snapshot returns a bounded restore error" do
+    {_store, agent, _saved} = saved_conversation()
+
+    assert {:error, :invalid_checkpoint_route} =
+             Checkpoint.restore_routing(agent, %{checkpoint_route: %{kind: :invalid}})
+
+    routing = %{checkpoint_route: %{kind: :definition_rule, key: @old_key, attributes: :invalid}}
+
+    assert {:error, {:checkpoint_route_restore_failed, Protocol.UndefinedError}} =
+             Checkpoint.restore_routing(agent, routing)
+  end
+
+  @tag :tmp_dir
+  test "public startup leaves the checkpoint intact when migration is misconfigured or rejected",
+       %{tmp_dir: path} do
+    {store, opts} = durable_checkpoint(path)
+    assert {:ok, saved} = Disk.fetch(store, "migration")
+
+    for {migrator, reason} <- [
+          {:invalid, :invalid_checkpoint_migrator},
+          {{__MODULE__, :reject_migration}, :unsupported_application_snapshot}
+        ] do
+      opts = Keyword.merge(opts, checkpoint_version: 2, checkpoint_migrator: migrator)
+      assert_invalid_checkpoint(opts, reason)
+      assert {:ok, ^saved} = Disk.fetch(store, "migration")
+    end
+
+    assert {:ok, root} = Server.start_link(opts)
+    assert :ok = GenServer.stop(root)
+  end
+
+  @tag :tmp_dir
+  test "public startup rejects unsupported checkpoint metadata before recovering work", %{
+    tmp_dir: path
+  } do
+    {store, opts} = durable_checkpoint(path)
+    assert {:ok, %{value: bytes}} = Disk.fetch(store, "migration")
+    assert {:ok, original} = Checkpoint.decode_snapshot(bytes)
+
+    for {changes, reason} <- [
+          {%{version: 2}, :unsupported_checkpoint_version},
+          {%{external_submissions: []}, :invalid_checkpoint_submissions},
+          {%{external_submissions: %{"request" => %{id: "one"}}}, :invalid_checkpoint_submissions}
+        ] do
+      assert {:ok, %{revision: revision}} = Disk.fetch(store, "migration")
+      assert {:ok, altered} = Checkpoint.encode_value(Map.merge(original, changes))
+      assert {:ok, next} = Disk.compare_and_swap(store, "migration", revision, altered)
+
+      assert_invalid_checkpoint(opts, reason)
+      assert {:ok, %{revision: ^next, value: ^altered}} = Disk.fetch(store, "migration")
     end
   end
 
@@ -185,6 +248,7 @@ defmodule Spectre.Server.CheckpointRouteMigrationTest do
     compile_agent(agent, :original)
     store = store()
     {:ok, @old_key, routing} = Router.route(agent, "price")
+    {:ok, @stable_key, stable_routing} = Router.route(agent, "hours")
 
     event = %{
       id: "request",
@@ -226,6 +290,14 @@ defmodule Spectre.Server.CheckpointRouteMigrationTest do
         },
         inbox: %{
           "route" => %{worker: %{kind: :route, event: event}, result: {:ok, @old_key, routing}},
+          "unaffected" => %{
+            worker: %{kind: :route, event: nil},
+            result: {:ok, @stable_key, stable_routing}
+          },
+          "unmatched" => %{
+            worker: %{kind: :route, event: nil},
+            result: {:unmatched, %{scope: :agent, input: nil}}
+          },
           "interrupt" => %{
             worker: %{kind: :interrupt, event: event},
             result: {:interrupt, @old_key, routing}
@@ -277,6 +349,28 @@ defmodule Spectre.Server.CheckpointRouteMigrationTest do
     }
   end
 
+  defp durable_checkpoint(path) do
+    agent = Module.concat(__MODULE__, "Agent#{System.unique_integer([:positive])}")
+    compile_agent(agent, :original)
+    store = start_supervised!({Disk, path: Path.join(path, "checkpoint")})
+
+    opts = [
+      agent: agent,
+      identity: %{subject: "migration-fixture"},
+      checkpoint: {store, "migration"},
+      gam: [storage: {:disk, Path.join(path, "gam")}]
+    ]
+
+    assert {:ok, root} = Server.start_link(opts)
+    assert :ok = GenServer.stop(root)
+    {store, opts}
+  end
+
+  defp assert_invalid_checkpoint(opts, reason) do
+    assert {:error, {%ArgumentError{message: message}, _stacktrace}} = Server.start_link(opts)
+    assert message == "invalid Server checkpoint: #{inspect(reason)}"
+  end
+
   defp store do
     path =
       Path.join(
@@ -318,6 +412,7 @@ defmodule Spectre.Server.CheckpointRouteMigrationTest do
       router strategies: [:regex], log_decisions: false
       flow :support do
         #{routes}
+        on :hours, regex: ~r/^hours$/
       end
     end
     """)

@@ -1,10 +1,53 @@
-# Installed tools in AgentServer 0.4
+# Call installed tools
 
 AgentServer manages GAM automatically. For startup, application callbacks and
 the boundary between application policy and kernel invariants, see
 [Automatic GAM](MANAGED_GAM.md).
 
-[Build an invoice integration](CUSTOM_STACK_TOOLS.md) to see the complete code for a custom client, a generated helper, a governed write and its human approval.
+[Build an invoice integration](CUSTOM_STACK_TOOLS.md) to try a scoped read,
+a governed write and the corresponding human approval.
+
+## Scoped tool calls
+
+With the Agent's `stack:` bound to an installed package, add a command in a
+Server, Flow Port or allowed Activity.
+
+```elixir
+call_tool(ctx, {:billing, :draft}, %{id: "D1"}, on_result: :loaded)
+```
+
+`ctx` is the Context passed to the current callback. The pair addresses
+the local installation ID and a declared operation. The argument map is
+the payload supplied to the adapter's `prepare/3`. `on_result: :loaded`
+names the continuation. With no explicit tag this example calls
+`handle_result(:draft, result, ctx)` on the command's owner. The route may
+have a different label, and the GAM operation used by a governed tool may
+have a separate name.
+
+Tools registered through `Integration.tool/4` support scoped calls as soon as
+the Agent binds the Stack. Descriptor-based tools can also be called this way
+when the operation resolves unambiguously in its installation. With a scoped
+call the payload is passed directly. With a generated helper's tagged tuple,
+the remaining tuple elements form the payload list. Choose the shape your
+adapter expects. [Package declaration and schema options](STACK.md#tools-and-generated-aliases).
+
+| Call option | Meaning |
+| --- | --- |
+| `on_result:` | A portable term supplied as the first argument to `handle_result/3`. Defaults to the scoped operation or generated helper name. |
+| `timeout:` | Cognitive tool deadline in milliseconds or `:infinity`. Omitting it uses the configured Server `worker_timeout:` or 30,000 ms. Governed execution uses the host's GAM settings. |
+| `confirmation:` | Governed tool request for confirmation. Use `true` to request it. The host's existing policy still applies if this option is omitted or set to `false`. |
+
+| Callback result | Interpretation |
+| --- | --- |
+| Adapter's projected value, such as `{:ok, draft}` | A cognitive result. The package controls its shape through `project/2`. |
+| `{:error, {:tool_rejected, tool, operation, reason}}` | Preparation or binding rejected the operation. The execution worker has not run it. |
+| `{:error, reason}` or `{:tool_unknown, details}` | A worker or projection failed. `:never` marks uncertain execution as unknown for reconciliation. |
+| `{:governed, %{outcome: %{status: :succeeded}}}` | GAM observed success for the admitted effect. Check the status when reporting the result. |
+| `{:consent, :rejected}` or `{:consent, :expired}` | The corresponding presentation did not receive usable consent. |
+| `{:governed_unknown, details}` | The admitted effect needs reconciliation through its original identity. |
+
+Programming errors such as invalid options or incompatible adapters can fail
+the callback before acquisition. [Callback defaults and dispatch](SERVER_CALLBACKS.md).
 
 ## Registered execution for managed GAM
 
@@ -14,9 +57,26 @@ register which adapter may execute a particular admitted operation. This is
 the **effect catalog contract 1**, separate from tool descriptor version 1 and
 `Spectre.Stack.Contract.V2`. AgentServer owns the GAM integration for registered effects.
 
-A registration includes `adapter`, package-local `operation`, `side_effect`,
-`material: :arguments`, identity `partition`, optional `schema_hash`, and portable
-`config`. The adapter implements `c:Spectre.Server.GAM.EffectAdapter.execute_effect/3`.
+A registration is a map keyed by the host operation named by `governed:`.
+Each descriptor contains these fields.
+
+| Field | Meaning |
+| --- | --- |
+| `contract: 1` | Version of the effect descriptor format. |
+| `adapter:` | Module implementing `c:Spectre.Server.GAM.EffectAdapter.execute_effect/3`. |
+| `operation:` | Package-local name passed as the adapter's first argument. |
+| `side_effect:` | Declares `:none`, `:idempotent`, `:reconcilable` or `:non_idempotent`. Use the semantics the external service actually supports. |
+| `material: :arguments` | The prepared canonical argument map becomes effect material. |
+| `partition:` | Identity fields frozen for execution. Allowed entries are `:subject`, `:conversation`, `:task` and `:flow`. |
+| `schema_hash:` | A binary hash when pinning the argument schema, or `nil`. The optional adapter callback `effect_schema/2` returns `{:ok, binary_hash}` or error. |
+| `config:` | Portable immutable adapter configuration. Put credentials and running clients in application-owned resources. |
+
+The adapter receives the local operation, the admitted arguments and the
+execution context. Use `context.identity` for the bound identity,
+`context.command_id` for the Act reference and
+`context.options[:stack_runtime]` when resolving a supervised resource.
+The context also supplies the compiled `installation`, `effect_config`
+and `effect_schema_hash`.
 Its result distinguishes `{:ok, receipt}` from
 `{:error, :failed | :definitive_no_effect | :ambiguous, reason}`. Only actual
 observations justify those statuses; an unknown result must not trigger blind retry.
@@ -64,24 +124,38 @@ defmodule MyApp.Server do
       proposal_metadata: candidate.metadata, on_result: :sent)
   end
 
-  def handle_result(operation, result, ctx), do: super(operation, result, ctx)
+  def handle_result(:sent, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
+    do: respond(ctx, "Message sent.")
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
 end
 
 defmodule MyApp.Agent do
   use Spectre.Agent, stack: MyApp.AI, server: MyApp.Server
+  model MyApp.WritingModel
+  router strategies: [:regex]
+
   flow :outreach do
     on :compose, regex: ~r/^compose$/i
   end
 end
 ```
 
-The host still supplies the ActionProvider implementation, model, prompt and
-GAM bindings/executors. Kinetic reads **consolidated model output**. It prepares
-candidate actions; a prepared action is not an admitted Act. `generate/3`
-without automatic planning keeps `model_output` for this continuation while
-its public `text` is cleaned. The runtime never dispatches partial AL tokens.
-`planning: true` retains the existing automatic planner path; do not run the
-explicit Kinetic helper a second time on that result.
+The host supplies `MyApp.Actions` as its action catalog,
+`MyApp.WritingModel` as its response provider, and a `:compose` prompt under
+`priv/prompts`. In `:closed_moves` mode Kinetic maps model Action Language
+to the application's registered actions. `:composed` carries generation,
+`:prepared` carries the parsed and validated proposal, and `:sent` carries
+the GAM result. `candidate.metadata` preserves the provenance of the
+selected action. The single-candidate pattern illustrates explicit selection.
+The final catch-all delegates other shapes to the Server default.
+
+The host must enable the chosen `candidate.operation` under GAM.
+Kinetic operates on consolidated `model_output`. The reply's public
+`text` can be cleaned before display. For the automatic planner path,
+use `generate(ctx, :compose, planning: true)` and inspect `proposals` in
+the generation result. Choose either automatic planning or an explicit
+Kinetic helper for a given generation. [Runnable integration](https://github.com/elchemista/spectre_ecosystem/blob/main/integration/stack_tools/README.md).
 
 ## Command lifecycle
 
@@ -109,12 +183,12 @@ mediation regardless of the callback or helper name. See [GAM](GAM.md) and the
 `:safe` replay or `:never` replay. An uncertain nonrepeatable request returns
 `{:tool_unknown, details}` instead of being blindly retried.
 
-A governed operation is normalized to the existing `propose` command **before**
-the outbox is written. GAM then owns Candidate, admission, Presentation when
-required, Act, Attempt and Outcome. `bind:` only selects a host operation; it
-never grants a mandate. The Server refuses startup if that binding is missing
-or the standard GAM bridge is absent. Consent may be suspended, resumed,
-rejected or closed by a timer through the existing pending/lifecycle API.
+A governed operation is normalized to `propose` before the outbox is written.
+GAM owns Candidate, admission, Presentation when required, Act, Attempt and
+Outcome. Package-specific `bind:` selects the host operation. Managed GAM
+validates enabled operations at startup and rejects proposals for operations
+outside the application's configured authority. Use the presentation and
+pending APIs for consent suspension, resumption, rejection or timer closure.
 
 Package `ServerTool.execute` functions are technical APIs for an already
 admitted host executor. Calling them directly in application callbacks bypasses
@@ -130,7 +204,7 @@ helpers and proposal commands for consequential work in Server callbacks.
 | `lens` | Open/read/close, using logical browser references | Browser action |
 | `prism` | Select a model; ordinary generation also uses installed extension | — |
 | `beam` | Inspect endpoints | Deliver |
-| `directive` | Pure state reducer: new/next/respond/inform | Proposed effects handled by the application |
+| `directive` | Pure state reducer for explicit new/next/respond/inform calls. Directive 0.2 can also run as an on-demand Activity. | The Activity or host dispatches selected tool proposals through GAM when governed. |
 | `pulse` | Inspect protocol/contacts | Send |
 | `ledger` | Inspect Server checkpoint head/entry metadata | — |
 | `lab` | Inspect canonical checkpoint data | — |
@@ -214,7 +288,7 @@ snapshot against the Agent's actual Stack before restoring a checkpoint.
 
 | Adapter function | Contract |
 | --- | --- |
-| `prepare(operation, payload, trusted)` | Pure validation/projection; returns `{:ok, args}` or `{:error, reason}`. Trusted fields are `agent`, routing hints and immutable installation `config`. |
+| `prepare(operation, payload, trusted)` | Pure validation in the Server's acquisition path. Return `{:ok, args}` or `{:error, reason}`. Trusted fields are `agent`, `routing` with route/scope/protection when present, and immutable installation `config`. |
 | `invoke(operation, args, context)` | Cognitive worker invocation. Context contains the resolved `installation`, `service_context`, `config` and trusted current `checkpoint_ref` when configured. |
 | `project(operation, raw)` | Returns `{:ok, portable_result}` or a projection failure. A normal service error is a portable result, e.g. `{:ok, {:error, reason}}`. |
 
@@ -242,10 +316,10 @@ timeout or loss of a usable projected receipt preserves `tool_unknown`.
 Neither choice supplies exactly-once external effects. Keep stable logical ids
 when an application service implements its own idempotency contract.
 
-The [public callable manifest](PUBLIC_API.md) already includes Server and GAM,
-but does not yet list this complete tool adapter/descriptor addition. Its
-manifest test must not be cited as coverage of generated helper contracts.
-Use the source declarations and tool integration tests for that boundary.
+Run the package's conformance tests and exercise tool calls through a
+Server with the real Stack. Include preparation rejection, the projected
+result, and consent rejection or expiry for governed paths.
+[Testing](TESTING.md).
 
 ## The same helpers inside a Skill
 

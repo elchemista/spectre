@@ -1,8 +1,9 @@
-# Spectre 0.4 guide for application authors
+# Spectre 0.4.1 guide for application authors
 
 Use **Stack → Agent → Server** for new applications. The Stack installs packages;
 the Agent declares recognition; the Server implements callbacks inside the
-Runtime's GenServer. GAM verifies declared effects. Start with
+Runtime's GenServer. An Agent can omit the Stack when using only application
+callbacks or a directly configured provider. GAM verifies declared effects. Start with
 [Getting started](docs/GETTING_STARTED.md) and [Server](docs/AGENT_SERVER.md).
 
 ## Generate and extend the supported shape
@@ -28,9 +29,12 @@ a subject ID alone is not authentication.
 - Identity, routing, pending and Agent fields: runtime views, not mutable authority.
 
 Return the Context produced by helpers such as `respond`, `generate`, `classify`,
-`propose`, `await_input` and `call_actor`. `on_result:` names the continuation.
-Select `tools: MyApp.AI` to generate helpers declared by installed packages;
-do not invent package imports or retain initialized provider clients in assigns.
+`propose`, `await_input` and `call_actor`. `on_result:` names an application
+continuation tag. A flow key comes from the Agent declaration, a tool reference
+from the Stack and a result tag from the command. `call_tool` takes the
+installation and operation pair. Select `tools: MyApp.AI` to generate helpers
+such as `kinetic` from installed package declarations. Keep live provider clients
+in runtime resources. [Command signatures and defaults](docs/SERVER_CALLBACKS.md).
 
 ```elixir
 def handle_result(:drafted, {:generated, response}, ctx),
@@ -54,11 +58,32 @@ Prefer `strategies:`, `:intent_dataset`, `:local_classifier`, `semantic_examples
 Handle no match and ambiguity through `handle_flow(:unmatched, input, ctx)` using
 `ctx.routing.reason`. An `:understand` prompt is application-defined.
 
-Foreground pending input reaches `handle_pending` first. Use the documented
+Explicit replies use the target wait ID and revision. Generic input can match
+an owned wait, reach the foreground pending handler or continue to routing.
+GAM decisions address an exact Presentation. Use the documented
 suspend/resume/expiry helpers for topic changes. Collection, review, embeddings
 and classifier training are separate steps; collected examples are not verified
 truth. See [Routing](docs/ROUTING.md), [Training](docs/TRAINING.md) and
 [Pending lifecycle](docs/PENDING_LIFECYCLE.md).
+
+## Open chat, Activities and package authoring
+
+For open chat, route plain conversation to `generate(ctx, :chat)` and handle
+`:unmatched` with the same generation path. To keep conversational context,
+pass selected previous turns as prompt assigns and render them as data. Recognize
+work using a declared route or a classifier. Start a mission with
+`start_activity(ctx, {:directive, :mission}, %{goal: input.text})`.
+Use the resulting execution reference to inspect, revise, answer or cancel it.
+Activity callbacks use the same Context and command API. Directive can continue
+its reducer or hand off a result through its optional `handle_invocation/3`.
+[Open-chat example](README.md#open-chat-with-directive-missions),
+[Activities](docs/AGENT_SERVER.md#run-a-background-activity).
+
+Package authors implement `Spectre.Stack.Installable` and can declare services,
+tools, flows and Activity types in `integration/1`. The Agent exposes selected
+flow scopes. Use the package callback `child_specs/2` for shared resources
+owned by the Stack runtime. Register governed effects via `effects/1`.
+[Integration contract](docs/STACK.md#typed-package-integrations).
 
 ## Authority and persistence
 

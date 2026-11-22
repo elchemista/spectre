@@ -125,12 +125,15 @@ defmodule Spectre.Forge.Proposal do
   end
 
   @doc "Restores a Proposal from decoded transport data."
+  @spec from_data(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def from_data(data), do: new(data)
 
   @doc "Encodes a Proposal with the production canonical codec."
+  @spec encode(t()) :: {:ok, binary()} | {:error, term()}
   def encode(%__MODULE__{} = proposal), do: proposal |> to_data() |> Value.encode()
 
   @doc "Decodes and verifies a Proposal."
+  @spec decode(binary()) :: {:ok, t()} | {:error, term()}
   def decode(encoded) when is_binary(encoded) do
     with {:ok, data} <- Value.decode(encoded), do: from_data(data)
   end

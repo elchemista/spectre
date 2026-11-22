@@ -21,6 +21,13 @@ defmodule Spectre.Server.Tool do
     server |> snapshot() |> Map.values() |> Enum.map(& &1.descriptor.adapter) |> Enum.uniq()
   end
 
+  @spec scoped_adapter_modules(map()) :: MapSet.t(module())
+  def scoped_adapter_modules(bindings) do
+    for {_, %{scoped_only?: true, snapshot: %{descriptor: %{adapter: adapter}}}} <- bindings,
+        into: MapSet.new(),
+        do: adapter
+  end
+
   def bindings!(state) do
     explicit =
       Map.new(snapshot(state.server), fn {name, expected} ->

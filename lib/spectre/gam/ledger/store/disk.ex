@@ -34,6 +34,7 @@ defmodule Spectre.GAM.Ledger.Store.Disk do
   syncs the batch first.
   """
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
   use GenServer
 
   @behaviour Spectre.GAM.Ledger.Store

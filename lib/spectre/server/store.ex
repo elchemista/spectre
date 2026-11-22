@@ -38,11 +38,19 @@ defmodule Spectre.Server.Store do
 
   @type store_ref :: term()
   @type entry :: %{revision: pos_integer(), value: term()}
-  @callback fetch(term(), term()) :: {:ok, entry()} | :not_found | {:error, term()}
-  @callback put_new(term(), term(), term()) :: {:ok, pos_integer()} | {:error, term()}
-  @callback compare_and_swap(term(), term(), pos_integer(), term()) ::
+
+  @doc "Reads the value and current revision for a key. Return `:not_found` for an absent key."
+  @callback fetch(store_ref(), term()) :: {:ok, entry()} | :not_found | {:error, term()}
+
+  @doc "Inserts a value atomically and returns its revision. Return `{:error, :exists}` when the key is taken."
+  @callback put_new(store_ref(), term(), term()) :: {:ok, pos_integer()} | {:error, term()}
+
+  @doc "Replaces a value at the expected revision. Return the new revision or `{:error, :conflict}` on a mismatch."
+  @callback compare_and_swap(store_ref(), term(), pos_integer(), term()) ::
               {:ok, pos_integer()} | {:error, term()}
-  @callback delete(term(), term(), pos_integer()) :: :ok | {:error, term()}
+
+  @doc "Deletes a key at the expected revision. Return `{:error, :conflict}` when the revision cannot be matched."
+  @callback delete(store_ref(), term(), pos_integer()) :: :ok | {:error, term()}
 
   @doc "Reads one byte- and count-bounded page of a tuple-key namespace. Cursors are opaque and exclusive."
   @callback list(term(), tuple(), keyword()) ::

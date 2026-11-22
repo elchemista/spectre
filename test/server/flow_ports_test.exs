@@ -67,6 +67,16 @@ defmodule Spectre.Server.FlowPortsTest do
     def handle_result(tag, result, ctx), do: DocumentFlow.handle_result(tag, result, ctx)
   end
 
+  defmodule MalformedFlow do
+    use Spectre.Flow.Port
+
+    @impl true
+    def routes, do: [on(:read, regex: "read")]
+
+    @impl true
+    def handle_flow(:read, _input, ctx), do: ctx
+  end
+
   defmodule Documents do
     use Spectre.Stack.Installable, id: :documents, version: "1.0.0"
 
@@ -127,6 +137,37 @@ defmodule Spectre.Server.FlowPortsTest do
 
     flow :general do
       on(:guide, regex: ~r/^apri la guida$/i)
+    end
+  end
+
+  test "malformed route patterns are rejected when the library declares its flow" do
+    assert_raise ArgumentError, ~r/invalid Stack flow route.*regex: "read"/, fn ->
+      Spectre.Integration.new()
+      |> Spectre.Integration.flow(:malformed, MalformedFlow)
+    end
+  end
+
+  test "the Agent reports ambiguous, missing and duplicate exposed flows" do
+    for {name, exposure, message} <- [
+          {:Ambiguous, :documents, "multiple flows in :documents. Use `expose flows: [...]`."},
+          {:UnknownPackage, :missing, "unknown flow installation :missing"},
+          {:UnknownScope, [flows: [{:documents, :missing}]],
+           "unknown installed flow {:documents, :missing}"},
+          {:Duplicate, [flows: [{:documents, :browse}, {:documents, :browse}]],
+           "duplicate exposed flow {:documents, :browse}"}
+        ] do
+      module = Module.concat(__MODULE__, name)
+
+      assert_raise ArgumentError, message, fn ->
+        Code.compile_quoted(
+          quote do
+            defmodule unquote(module) do
+              use Spectre.Agent, stack: unquote(Stack), server: unquote(Root)
+              expose(unquote(exposure))
+            end
+          end
+        )
+      end
     end
   end
 

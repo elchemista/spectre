@@ -155,6 +155,14 @@ defmodule Spectre.Server.CheckpointTest do
 
     assert is_map(reference)
 
+    assert {:error, _} = Server.Checkpoint.decode_snapshot(<<255>>, payload_store: config)
+    refute_received {:checkpoint_payload_fetch, _, _}
+
+    assert {:ok, %{assigns: %{count: 3}}} =
+             Server.Checkpoint.decode_snapshot(bytes, payload_store: config)
+
+    assert_receive {:checkpoint_payload_fetch, _, %{key: nil, revision: nil}}
+
     assert {:ok, %{assigns: %{count: 3, remembered: true, private: _}}} =
              Server.Checkpoint.decode_snapshot(bytes, opts)
 

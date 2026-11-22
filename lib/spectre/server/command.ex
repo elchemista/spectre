@@ -180,9 +180,9 @@ defmodule Spectre.Server.Command do
   defp activity_control(target, opts) do
     with :ok <- activity_target(target),
          :ok <- activity_options(opts, [:if_revision, :on_result]) do
-      case Keyword.get(opts, :if_revision) do
-        nil -> :ok
-        revision when is_integer(revision) and revision >= 0 -> :ok
+      case Keyword.fetch(opts, :if_revision) do
+        :error -> :ok
+        {:ok, revision} when is_integer(revision) and revision >= 0 -> :ok
         _ -> {:error, :invalid_activity_revision}
       end
     end

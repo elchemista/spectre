@@ -15,9 +15,15 @@ defmodule Spectre.Instance.CheckpointStore do
 
   @type config :: module() | {module(), keyword()} | false | nil
 
+  @doc "Loads the checkpoint for an exact Instance reference or returns `:not_found`."
   @callback load(Ref.t(), keyword()) ::
               :not_found | {:ok, String.t() | map()} | {:error, term()}
 
+  @doc """
+  Atomically stores the encoded checkpoint when the durable revision matches
+  the expected revision. The fourth argument is the revision being written.
+  Return `{:error, {:ambiguous, reason}}` if the commit cannot be determined.
+  """
   @callback compare_and_swap(
               Ref.t(),
               String.t(),
@@ -26,6 +32,12 @@ defmodule Spectre.Instance.CheckpointStore do
               keyword()
             ) :: :ok | {:ok, term()} | {:error, term()}
 
+  @doc """
+  Atomically migrates the observed legacy checkpoint to the stable reference.
+  Store the new encoded checkpoint under the target and reject changes to
+  the observed source or a divergent target. Return `:ok` or explicitly
+  report whether the source was moved or aliased.
+  """
   @callback migrate_instance_key(
               Ref.t(),
               Ref.t(),
@@ -34,9 +46,11 @@ defmodule Spectre.Instance.CheckpointStore do
               keyword()
             ) :: :ok | {:ok, :moved | :aliased} | {:error, term()}
 
+  @doc "Erases the Instance checkpoint idempotently and records its erasure status."
   @callback erase(Ref.t(), ErasureRequest.t(), keyword()) ::
               {:ok, :erased | :already_erased} | {:error, term()}
 
+  @doc "Reads the durable erasure status for the Instance or returns `:not_erased`."
   @callback erasure_status(Ref.t(), keyword()) ::
               :not_erased | {:ok, ErasureStatus.t()} | {:error, term()}
 

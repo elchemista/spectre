@@ -9,5 +9,6 @@ defmodule Spectre.GAM.Genesis.Verifier do
 
   alias Spectre.GAM.Genesis
 
+  @doc "Checks the host's Genesis attestation before accepting the Domain's authority root."
   @callback verify(Genesis.t(), keyword()) :: :ok | {:error, term()}
 end

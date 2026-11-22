@@ -58,6 +58,8 @@ defmodule Spectre.Router.SemanticCache.Owner do
     ]
   }
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do

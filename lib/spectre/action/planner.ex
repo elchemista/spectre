@@ -13,14 +13,18 @@ defmodule Spectre.Action.Planner do
           required(:actions) => [Action.t() | map()]
         }
 
+  @doc "Consolidates model output into public reply text and a list of proposed actions."
   @callback plan_response(String.t(), Spectre.Context.t() | map(), keyword()) ::
               {:ok, response()} | {:error, term()}
 
+  @doc "Optionally extracts a single proposed action from model output."
   @callback plan(String.t(), Spectre.Context.t() | map(), keyword()) ::
               {:ok, Action.t() | map()} | {:error, term()}
 
+  @doc "Optionally cleans model output for a public reply."
   @callback clean_reply(String.t(), Spectre.Context.t() | map(), keyword()) :: String.t()
 
+  @doc "Returns whether reply cleaning is supported incrementally for streamed output."
   @callback incremental_cleaner?() :: boolean()
 
   @optional_callbacks plan: 3, clean_reply: 3, incremental_cleaner?: 0

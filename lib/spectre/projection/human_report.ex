@@ -70,9 +70,11 @@ defmodule Spectre.Projection.HumanReport do
         }
 
   @doc "Returns the fixed generator id."
+  @spec id() :: String.t()
   def id, do: @generator_id
 
   @doc "Returns the fixed generator version."
+  @spec version() :: pos_integer()
   def version, do: @generator_version
 
   @doc "Projects a deterministic report from two canonical Definitions."

@@ -7,6 +7,7 @@ defmodule Spectre.GAM.Definition.Verifier do
   is never a substitute for live admission, consent or executor validation.
   """
 
+  @doc "Checks the immutable Definition against the supplied governed Surface."
   @callback verify(Spectre.GAM.Surface.t(), Spectre.GAM.Definition.t()) ::
               {:ok, Spectre.GAM.Surface.definition_report()} | {:error, term()}
 end

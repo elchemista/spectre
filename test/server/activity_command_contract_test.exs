@@ -73,6 +73,15 @@ defmodule Spectre.Server.ActivityCommandContractTest do
              ActivityBinding.authorize(%{activity: %{scope: :all}}, {proposal, nil})
   end
 
+  test "a lost Managed owner stays distinguishable from an empty coordinator" do
+    {owner, monitor} = spawn_monitor(fn -> :ok end)
+    assert_receive {:DOWN, ^monitor, :process, ^owner, :normal}
+
+    state = ActivityBinding.connect(%{managed_owner: owner}, :existing)
+    assert state.activity_connection == {:error, :activity_owner_unavailable}
+    assert {:error, :activity_owner_unavailable} = ActivityBinding.query_owner(state)
+  end
+
   @tag :tmp_dir
   test "retiring a disk Activity snapshot preserves the Root snapshot and is idempotent", %{
     tmp_dir: path

@@ -29,6 +29,9 @@ defmodule Spectre.Server.Checkpoint do
   Known unstarted governed requests are rejected; already-started governed
   requests reconcile their original journal through GAM.
 
+  Scoped tool adapters and exposed Flow Ports participate in the fingerprint
+  through one cached digest of their code identities.
+
   With `payload_store: {module, options}`, the application stores the encoded
   snapshot and the coordination Store receives only an opaque reference. The
   callback runs in a supervised task; this existing ordered durability barrier
@@ -635,22 +638,24 @@ defmodule Spectre.Server.Checkpoint do
   end
 
   defp definition_fingerprint(state) do
-    modules =
+    {definition_modules, flow_modules} =
       if definition_module?(state.agent) do
-        definition_modules(state.agent, MapSet.new())
+        definition_modules(state.agent, {MapSet.new(), MapSet.new()})
       else
-        MapSet.new([state.agent])
+        {MapSet.new([state.agent]), MapSet.new()}
       end
 
     modules =
-      modules
+      definition_modules
       |> MapSet.put(state.server)
       |> MapSet.union(MapSet.new(Spectre.Server.Tool.adapter_modules(state.server)))
-      |> Enum.sort()
-      |> Enum.map(fn module ->
-        Code.ensure_loaded!(module)
-        {module, module.__info__(:md5)}
-      end)
+
+    binding_modules =
+      state
+      |> Map.get(:tool_bindings, %{})
+      |> Spectre.Server.Tool.scoped_adapter_modules()
+      |> MapSet.union(flow_modules)
+      |> MapSet.difference(modules)
 
     canonical =
       if definition_module?(state.agent) do
@@ -667,14 +672,53 @@ defmodule Spectre.Server.Checkpoint do
     %{
       version: 1,
       canonical: canonical,
-      modules: modules,
+      modules: code_identities(modules),
       checkpoint_version: Keyword.get(state.opts, :checkpoint_version, 1)
     }
+    |> put_binding_code_digest(binding_modules)
+  end
+
+  defp code_identities(modules) do
+    modules
+    |> Enum.sort()
+    |> Enum.map(fn module ->
+      Code.ensure_loaded!(module)
+      {module, module.module_info(:md5)}
+    end)
+  end
+
+  defp put_binding_code_digest(fingerprint, binding_modules) do
+    case code_identities(binding_modules) do
+      [] ->
+        fingerprint
+
+      identities ->
+        bytes = :erlang.term_to_binary(identities, [:deterministic])
+        Map.put(fingerprint, :binding_code_digest, :crypto.hash(:sha256, bytes))
+    end
   end
 
   @doc false
   def refresh_fingerprint(state),
     do: Map.put(state, :definition_fingerprint_cache, definition_fingerprint(state))
+
+  @doc false
+  @spec validate_hot_upgrade(map(), map()) :: :ok | {:error, :checkpoint_binding_changed}
+  def validate_hot_upgrade(state, upgraded) do
+    from = Map.get(cached_fingerprint(state), :binding_code_digest)
+    to = Map.get(cached_fingerprint(upgraded), :binding_code_digest)
+
+    # Restored continuations can be migrated against their saved routing hints.
+    # A live worker or wait can still return to the previous callback contract.
+    active? =
+      not is_nil(state.current) or not :queue.is_empty(state.queue) or
+        Enum.any?(
+          [state.pending, state.outbox, state.inbox, state.workers, state.operations],
+          &(map_size(&1) > 0)
+        )
+
+    if from != to and active?, do: {:error, :checkpoint_binding_changed}, else: :ok
+  end
 
   defp cache_fingerprint(state) do
     if Map.has_key?(state, :definition_fingerprint_cache),
@@ -835,9 +879,9 @@ defmodule Spectre.Server.Checkpoint do
       else: {:error, :checkpoint_migration_changed_reconciliation}
   end
 
-  defp definition_modules(module, seen) do
+  defp definition_modules(module, {seen, flows}) do
     if MapSet.member?(seen, module) do
-      seen
+      {seen, flows}
     else
       definition = Definition.fetch!(module)
       seen = MapSet.put(seen, module)
@@ -849,11 +893,18 @@ defmodule Spectre.Server.Checkpoint do
 
       seen = if definition.stack, do: MapSet.put(seen, definition.stack), else: seen
 
-      Enum.reduce(definition.skills, seen, fn mount, seen ->
-        definition_modules(mount.module, seen)
+      flows = Enum.reduce(definition.rules, flows, &collect_flow_module/2)
+
+      Enum.reduce(definition.skills, {seen, flows}, fn mount, accumulator ->
+        definition_modules(mount.module, accumulator)
       end)
     end
   end
+
+  defp collect_flow_module(%{handler: {:server, _, [flow_port: {_, _, module}]}}, set),
+    do: MapSet.put(set, module)
+
+  defp collect_flow_module(_, set), do: set
 
   defp validate(%{version: 1, agent: agent, server: server, identity: identity} = value, state) do
     cond do

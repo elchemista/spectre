@@ -1,4 +1,4 @@
-# Stack in 0.4
+# Stack and package integration
 
 `Spectre.Stack` compiles the packages and services available to an Agent into
 one immutable environment. It replaces implicit global extension discovery
@@ -10,7 +10,12 @@ an Agent Stack and catches compatibility, dependency, conflict, ordering, and
 ownership failures that isolated manifest checks cannot see. See
 [Foundation Conformance](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/FOUNDATION_CONFORMANCE.md).
 
-**Do I need an empty Stack?** The generated Agent can use `use Spectre.Agent, server: MyApp.SupportServer` and the callback module can use plain `use Spectre.Server`. Add `stack:` and `tools:` when installing a package. To wrap an existing SDK, [build the invoice tool from start to finish](CUSTOM_STACK_TOOLS.md).
+An Agent with application routes, a model or OTP callbacks can start with
+`use Spectre.Agent, server: MyApp.SupportServer` and plain `use Spectre.Server`.
+Add a Stack when you install a package or declare an Activity. Set `stack:`
+on the Agent to make scoped `call_tool` calls available. Set `tools:` on a
+Server module when its callbacks use generated helper names. [Build an
+invoice tool from start to finish](CUSTOM_STACK_TOOLS.md).
 
 ## Define a Stack
 
@@ -27,9 +32,12 @@ defmodule MyApp.AI do
 end
 ```
 
-Package blocks are kept as raw AST until the package compiler receives them.
-`provider` and `model` in this example are local forms understood by
-`MyApp.Inference`; Stack does not import those names as macros.
+The host supplies both package modules. `provider` and `model` in the block are
+forms implemented by `MyApp.Inference`. Spectre passes that block to the
+package's compiler. `use Spectre.Stack` defaults the Stack ID to its module and
+its definition version to `1`. `install Package, as: :billing` gives the
+installation a local ID. Use that ID in scoped calls and runtime configuration.
+Other keyword options belong to the package and reach its `compile/3` callback.
 
 Select installed helpers in a Server and bind the same Stack to the Agent:
 
@@ -50,17 +58,11 @@ Recognition remains declarative in the Agent. Application continuations live
 in Server callbacks; the Runtime owns the actual GenServer. See
 [AgentServer](AGENT_SERVER.md) and [DSL](DSL.md).
 
-The compiled Agent stores the Stack module and immutable, digest-fenced
-installation references. For each package that declares `agent_extensions`,
-the Agent automatically registers the corresponding adapter with that
-package's compiled Stack configuration. Selectors, memory adapters and action
-catalogs can therefore be supplied without repeating `use Package` on every
-Agent. The retained extension contract also supports legacy turn/flow/effect
-hooks; their availability does not convert every old execution path into a
-Server callback or a GAM-governed executor.
-
-It does not copy runtime clients, credentials, processes, or connections into
-the Agent definition.
+The compiled Agent stores the Stack module and immutable installation
+references. Package-declared `agent_extensions:` can connect capabilities
+such as Prism's selector or Kinetic's planner as soon as the Agent selects
+the Stack. Use the package's runtime configuration for clients, credentials
+and connections.
 
 ## Installed Does Not Mean Authorized
 
@@ -88,7 +90,7 @@ authority ledger. Mount `governed:` references restrict the root's configured
 operations, not grant new permissions. Consent and provenance stay associated
 with the exact Skill and presentation. See [Skills](SKILLS.md).
 
-## Tool registration in 0.4
+## Tool registration with descriptor maps
 
 The optional `c:Spectre.Stack.Installable.tools/1` callback receives the compiled
 package configuration and returns immutable tool descriptors. It is the same
@@ -116,7 +118,7 @@ Operations are a non-empty map. A cognitive operation requires `path`, `retry`
 (`:safe` or `:never`) and `max_bytes`. A governed operation instead requires
 `path: :governed`, `operation` (the host binding name) and `max_bytes`; it cannot
 declare its own retry policy or execution authority. Byte budgets must be
-positive integers no larger than the core codec's 16 MiB limit.
+positive integers no larger than `Spectre.Server.Checkpoint.max_bytes/0`.
 
 `default` is `nil` or a declared operation. Tool names are Elixir identifiers;
 each name must be unique across the Stack. Installation `as:` changes only the
@@ -134,17 +136,25 @@ without a compile-time dependency on the behaviour module.
 the compiled configuration supplied through `configs:`. Raw `{module, manifest}`
 pairs remain data-only manifest checks and do not execute callbacks.
 
-Server helpers and dispatch consume these descriptors with
-`use Spectre.Server, tools: MyApp.AI`. Adapter availability, compiled installation
-identity and governed host bindings are validated at Server startup. See
-[Installed tools](STACK_TOOLS.md) for the lifecycle, package matrix and example.
+Use `use Spectre.Server, tools: MyApp.AI` to generate named helpers from these
+descriptors. With the same Stack bound to an Agent, an unambiguous operation can
+also be called by its scoped reference. Generated helpers validate their
+compiled binding at startup. Scoped calls validate the selected adapter
+when the command is acquired. [Installed tools](STACK_TOOLS.md).
 
 ## Typed package integrations
 
 `integration/1` receives the compiled installation configuration. Use
-`Spectre.Integration` to declare service providers, tool bindings and on-demand
+`Spectre.Integration` to declare service providers, tools, flows and on-demand
 Activity types. Existing `tools/1`, `effects/1` and `child_specs/2` declarations
 can contribute additional capabilities to the same installation.
+
+| Builder | Caller and result | Authority and lifetime |
+| --- | --- | --- |
+| `service/4` | The owning call site calls the provider's behaviour with its runtime request and installation options. | Agent binding chooses the provider. Provider callbacks obey the host's policy for access and external calls. |
+| `tool/4` | Server workers prepare arguments and project results to the initiating callback. | Cognitive adapters enforce access scope. A governed tool stages a proposal and GAM admits its registered effect before execution. |
+| `flow/3` | An exposed route calls the flow with its label, normalized input and Context. Commands return to that flow's result callback. | The Agent exposes eligible routes. Flow callbacks run in the conversation owner. |
+| `activity/4` | An explicit start invokes `handle_start/2` with application arguments and a Context. Lifecycle events carry the execution ref. | The host selects allowed types. Each execution has its own supervised process and a narrowed tool scope within the Root's GAM Domain. |
 
 ```elixir
 defmodule MyApp.Documents do
@@ -155,38 +165,94 @@ defmodule MyApp.Documents do
     Spectre.Integration.new()
     |> Spectre.Integration.tool(:read, MyApp.Documents.Read,
       args: [id: :string],
+      description: "Read a document owned by the current subject",
       access: :subject_scoped,
       retry: :safe)
-    |> Spectre.Integration.activity(:research, MyApp.Research)
+    |> Spectre.Integration.flow(:lookup, MyApp.Documents.Flow)
+    |> Spectre.Integration.activity(:research, MyApp.Research,
+      tools: [{:documents, :read}],
+      requires: [{:documents, :read}]
+    )
   end
 end
 ```
 
-Call an operation from a Server or Activity with
-`call_tool(ctx, {:documents, :read}, %{id: "D12"}, on_result: :loaded)`.
-Use the installation ID in that pair when installing with `as:`. An optional
-`helper:` name also makes the existing Server helper available through `tools:`.
-Both call paths use the same tool adapter. Governed tools name an existing host
-GAM operation through `governed:`. The host configures authority and installs or
-binds its effect executor. A typed Activity starts on an explicit command using
-`{:documents, :research}`. Declare application-local types inside a Stack with
-`activity(:research, MyApp.Research)` and start them by the local name.
-Use `tools:` to narrow an Activity's tool scope and `requires:` to name the
-scoped tools it needs to start.
+The example names adapter modules provided by your library. Use an atom for
+each operation, flow scope and Activity type. Define each name once per
+installation and kind. The application decides which routes and capabilities
+to use. [Runnable Documents example](EXAMPLES.md#chat-and-reusable-documents-flow).
 
-When a package declares `Spectre.Integration.service/4`, it names the behaviour
-and its implementation. The Agent binds a sole provider automatically. Select
-an installation explicitly with
-`use Spectre.Agent, stack: MyApp.Stack, services: %{Spectre.Inference.Selector => :library}`
-when several providers match. The existing inference selector and action
-planner call sites use the selected implementation. A custom service can be
-looked up by its caller with `Spectre.Stack.service/2`.
+### Tools and generated aliases
 
-`Spectre.Stack.tool_metadata/2` returns the public argument schema and its
-digest for a host-selected tool. The tool adapter's `prepare/3` callback still
-validates execution inputs and enforces its data access rules. Public metadata
-has a separate digest so descriptions and schemas do not invalidate executable
-tool bindings.
+Call `call_tool(ctx, {:documents, :read}, %{id: "D12"}, on_result: :loaded)`
+from a Server, Flow or allowed Activity. `:documents` is the local
+installation ID and `:read` is the operation declared by the package.
+The argument map goes straight to `prepare/3`. The runtime delivers the
+result to `handle_result(:loaded, result, ctx)` on the caller. Omitting
+`on_result:` uses the operation name for a scoped call.
+
+| `Integration.tool/4` option | Meaning |
+| --- | --- |
+| `args:` | A keyword list of required fields for public JSON Schema. Defaults to `[]`. Types are `:string`, `:integer`, `:number`, `:boolean`, `:object`, `:array` and `{:array, item_type}`. `prepare/3` validates the actual payload. |
+| `description:` | Optional text for callers that display or expose public tool metadata. |
+| `access:` | Optional `:subject_scoped` metadata. Enforce that scope in the adapter, using authenticated identity. |
+| `governed:` | Names the host GAM operation for a consequential tool. Register the executor with `effects/1` and enable the operation in the host's GAM configuration. |
+| `helper:` | Optional helper name. `helper: :read_document` generates `read_document(ctx, args, opts)` and its two-argument form in a Server with `tools: MyApp.Stack`. Both call paths use the same adapter. |
+| `retry:` | Cognitive execution only. Defaults to `:never`. `:safe` allows replay of interrupted work. GAM owns governed execution and recovery. |
+| `max_bytes:` | Positive byte budget for encoded prepared arguments and projected results. Defaults to the largest allowed value, `Spectre.Server.Checkpoint.max_bytes/0`. |
+
+`Spectre.Stack.tool_metadata(MyApp.Stack, {:documents, :read})` returns
+`{:ok, metadata}` for a typed tool or `{:error, reason}`. Public metadata has
+its own digest, separate from the execution binding. The host can use it to
+describe selected tools to an application or model. [Adapter and command
+contracts](STACK_TOOLS.md#scoped-tool-calls).
+
+### Flows and Activities
+
+Expose a package's only flow with `expose :documents` inside the Agent.
+If the installation declares more than one, choose the scope with
+`expose flows: [{:documents, :lookup}]`. A Flow Port implements `routes/0`
+and `handle_flow/3`. `use Spectre.Flow.Port` imports the Server helpers and
+provides fallthrough to the default result handler. Its own `handle_result/3`
+clauses customize results. Keep exposed route labels unique within the Agent.
+[Reusable flows and replies](AGENT_SERVER.md#reusable-flows-and-targeted-answers).
+
+`start_activity(ctx, {:documents, :research}, %{id: "D12"})` queues a new
+execution of the installed type. An application can declare
+`activity(:research, MyApp.Research)` directly inside its Stack and start
+that type by the atom `:research`. Both declarations accept the same options.
+
+| Activity declaration option | Meaning |
+| --- | --- |
+| `tools:` | The permitted scoped tool refs. Defaults to `:all` within the host's allowed scope. Use `[]` for an Activity with no tools. |
+| `requires:` | Tools that must resolve in the Stack and survive the effective scope before an execution can start. Defaults to `[]`. |
+| `allow_children:` | Defaults to `false`. Use `true` or a list of Activity types to enable child starts, subject to host policy and the parent's scope. |
+
+The host can narrow types and tools further at startup and narrow tools for
+an individual start. Lifecycle events report the allocated execution reference.
+[Activity start, signals and lifecycle](AGENT_SERVER.md#run-a-background-activity).
+
+### Services
+
+`Integration.service(builder, behaviour, module, opts)` supplies a provider
+implementing the behaviour's required callbacks. `opts` defaults to `[]`.
+The provider receives these portable installation options. The Agent binds one
+matching provider automatically. If two packages provide the same behaviour,
+select an installation with
+`use Spectre.Agent, stack: MyApp.Stack, services: %{Spectre.Inference.Selector => :library}`.
+The values are installation IDs. Invalid or ambiguous selections fail at
+compilation.
+
+Spectre already calls the selected `Spectre.Inference.Selector` and
+`Spectre.Action.Planner` through the generation and planning services.
+Application code can look up its own role with
+`Spectre.Stack.service(agent_module, MyApp.Retriever)`, which returns
+`{provider, opts}` or `nil`. The application implements the call site for
+a new behaviour. [Provider contracts](BEHAVIOURS.md).
+
+Run `mix spectre.gen.installable MyApp.Documents` to scaffold an Installable and
+its compiled Stack test. Run `mix spectre.doctor --agent MyApp.Agent` to inspect
+the application's compiled bindings. [Doctor and runtime diagnostics](DIAGNOSTICS.md).
 
 ## Installable Contract V1
 
@@ -227,10 +293,13 @@ The manifest fields are:
 - Agent extensions that adapt the installation into executable Agent behavior;
 - the optional package-local DSL module and portable metadata.
 
-`compile/3` is optional. Its result must be a map or keyword list containing
-only immutable data. PID, ports, references, and functions are rejected.
-Package manifests and compiled installations receive deterministic SHA-256
-digests.
+`use Spectre.Stack.Installable` supplies `manifest/0` and a default compiler
+that returns install options for an installation without a block.
+`compile(options, block_ast, caller)` is optional. Return
+`{:ok, map_or_keyword}` or `{:error, reason}`. The compiler and
+`integration/1`, `tools/1`, and `effects/1` receive and return immutable
+configuration. PIDs, ports, refs and functions are rejected. Package manifests
+and compiled installations receive deterministic SHA-256 digests.
 
 Satellite package tests can execute the versioned contract directly:
 
@@ -298,6 +367,13 @@ children = [
 {:ok, ref} = Spectre.Stack.resolve(MyApp.AI, :resource, :client)
 {:ok, client_pid} = Spectre.Stack.Runtime.resolve(MyApp.AIRuntime, ref)
 ```
+
+`stack:` selects the compiled definition and `name:` registers the resource
+supervisor. `packages:` supplies runtime options keyed by local installation
+ID. For this package `runtime_client_options()` is the host function that
+returns the client's runtime configuration. The `{:client, child_spec}`
+entry in `child_specs/2` makes `:client` resolvable by the Stack's declared
+resource reference.
 
 The runtime has no default registered name. Resource resolution is read-through
 cached; a supervisor child scan occurs only on a cache miss. Runtime and

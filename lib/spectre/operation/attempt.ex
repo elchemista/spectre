@@ -66,6 +66,7 @@ defmodule Spectre.Operation.Attempt do
           metadata: map()
         }
 
+  @doc "Checks identity, fencing fields, counters, timeout, side-effect class, and portability for one attempt."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = attempt) do
     cond do

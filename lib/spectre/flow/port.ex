@@ -5,14 +5,16 @@ defmodule Spectre.Flow.Port do
   Register the module with `Spectre.Integration.flow/3`. The Agent exposes the
   installation or selects a particular flow. The router matches the exposed
   rules and the flow receives the selected local label and the Server Context.
+  With `use Spectre.Flow.Port`, results unmatched by application clauses use
+  the Server's default result handler.
 
       defmodule MyApp.Documents.Flow do
         use Spectre.Flow.Port
 
         def routes, do: [on(:read, regex: ~r/^show (?<id>D[0-9]+)$/i)]
 
-        def handle_flow(:read, _input, ctx) do
-          call_tool(ctx, {:documents, :read}, %{id: ctx.routing.params["id"]})
+        def handle_flow(:read, _input, %{routing: %{params: %{"id" => id}}} = ctx) do
+          call_tool(ctx, {:documents, :read}, %{id: id})
         end
 
         def handle_result(:read, {:ok, document}, ctx), do: respond(ctx, document.title)
@@ -24,19 +26,91 @@ defmodule Spectre.Flow.Port do
 
   @typedoc "A local route label and its Agent routing options."
   @type declaration :: {atom(), keyword()}
+  @typedoc "A compiled flow module and its portable route declarations."
   @type binding :: %{module: module(), routes: [declaration()]}
+  @typedoc "An installation ID, local flow scope and callback module."
   @type owner :: {term(), atom(), module()}
 
+  @doc "Returns the package's local routes. The Agent exposes them through `Spectre.Agent.expose/1`."
   @callback routes() :: [declaration()]
+  @doc "Handles the matched local route label and normalized input."
   @callback handle_flow(atom(), Input.t(), Context.t()) :: Context.t()
+  @doc "Handles a result from one of the flow's commands using its continuation tag."
   @callback handle_result(term(), term(), Context.t()) :: Context.t()
   @optional_callbacks handle_result: 3
 
+  @doc """
+  Installs the Flow behaviour and imports route and Context helpers.
+
+  Use qualified `Spectre.Server` calls for host process operations.
+  """
+  @spec __using__(Macro.t()) :: Macro.t()
   defmacro __using__(_options) do
     quote do
       @behaviour Spectre.Flow.Port
       import Spectre.Flow.Port, only: [on: 2]
-      import Spectre.Server, except: [inspect: 1, inspect: 2]
+
+      import Spectre.Server,
+        only: [
+          assign: 2,
+          assign: 3,
+          await_input: 2,
+          await_input: 3,
+          await_reply: 2,
+          await_reply: 3,
+          call_actor: 3,
+          call_actor: 4,
+          call_tool: 3,
+          call_tool: 4,
+          cancel_activity: 2,
+          cancel_activity: 3,
+          cancel_pending_close: 2,
+          cancel_pending_close: 3,
+          classify: 2,
+          classify: 3,
+          close_pending: 2,
+          close_pending: 3,
+          close_pending_after: 3,
+          close_pending_after: 4,
+          confirm_pending: 2,
+          delegate: 3,
+          delegate: 4,
+          delete_private: 2,
+          explain_pending: 2,
+          generate: 2,
+          generate: 3,
+          get_pending: 2,
+          get_private: 2,
+          get_private: 3,
+          no_response: 1,
+          propose: 3,
+          propose: 4,
+          put_private: 2,
+          put_private: 3,
+          reject_pending: 2,
+          resolve_await: 3,
+          respond: 2,
+          respond: 3,
+          resume_pending: 2,
+          route_current_input: 1,
+          route_current_input: 2,
+          signal_activity: 3,
+          signal_activity: 4,
+          start_activity: 3,
+          start_activity: 4
+        ]
+
+      @before_compile Spectre.Flow.Port
+    end
+  end
+
+  @doc false
+  @spec __before_compile__(Macro.Env.t()) :: Macro.t()
+  defmacro __before_compile__(env) do
+    if Spectre.Server.result_fallback_needed?(env.module) do
+      quote generated: true do
+        def handle_result(tag, result, ctx), do: Spectre.Server.default_result(tag, result, ctx)
+      end
     end
   end
 

@@ -3,6 +3,7 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
 
   alias Spectre.Server
   alias Spectre.Server.{Activities, Runtime}
+  alias Spectre.Server.Store.Port, as: Store
 
   @timeout 5_000
   @publication_class "test.activity.publish"
@@ -83,6 +84,8 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
 
     def handle_start(:waiting, ctx), do: ctx
 
+    def handle_start(:announce, ctx), do: respond(ctx, "Activity response")
+
     def handle_result(:read, {:ok, document}, ctx), do: complete(ctx, document)
 
     def handle_result(:publish, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
@@ -99,6 +102,11 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
 
     def handle_signal({:cancel_child, target}, ctx),
       do: cancel_activity(ctx, target, on_result: :child_control)
+
+    def handle_signal(:output_burst, ctx) do
+      ctx = respond(ctx, String.duplicate("x", 129 * 1024))
+      Enum.reduce(1..300, ctx, &respond(&2, "output #{&1}"))
+    end
 
     def handle_signal({:hold_completion, result}, ctx) do
       send(Spectre.Server.RuntimeActivitiesTest, {:completion_ready, self()})
@@ -142,6 +150,9 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
     def handle_call({:cancel, target, opts}, _from, ctx),
       do: {:reply, :queued, cancel_activity(ctx, target, opts)}
 
+    def handle_call({:incorrect_control, target}, _from, ctx),
+      do: {:reply, {signal_activity(self(), target, :wake), cancel_activity(self(), target)}, ctx}
+
     def handle_call(message, from, ctx), do: super(message, from, ctx)
 
     def handle_flow({:test, :ping}, _input, ctx), do: respond(ctx, "pong")
@@ -171,6 +182,168 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
     flow :test do
       on(:ping, regex: ~r/^ping$/)
     end
+  end
+
+  test "Activity output uses the Root consumer envelope and the execution reference" do
+    root = start_root()
+    ref = start_activity(root, :announce)
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref, event_id: event_id},
+                     {:output, {:response, nil, "Activity response", _}}}},
+                   @timeout
+
+    assert is_binary(event_id)
+    assert {:ok, _} = Server.signal_activity(root, ref, {:revise, :announced})
+    assert_receive {Server, ^root, {:activity, %{ref: ^ref}, {:completed, :announced}}}, @timeout
+    refute_received {:handled_activity, ^ref, _, {:output, _}}
+    refute_received {Server, _child, {:response, _, "Activity response", _}}
+  end
+
+  test "a paused Root receives one notification in flight and retains the terminal event" do
+    root = start_root()
+    ref = start_activity(root)
+    coordinator = activity_coordinator(root)
+    child = activity_pid(root, ref)
+
+    :ok = :sys.suspend(root)
+
+    try do
+      assert {:ok, _} =
+               Activities.control(
+                 coordinator,
+                 ref,
+                 Spectre.Identity.uuid7(),
+                 {:signal, :output_burst},
+                 []
+               )
+
+      assert eventually(fn -> :queue.len(:sys.get_state(coordinator).events) == 32 end)
+      assert map_size(:sys.get_state(child).outbox) == 0
+
+      assert {:ok, _} =
+               Activities.control(
+                 coordinator,
+                 ref,
+                 Spectre.Identity.uuid7(),
+                 {:signal, {:revise, :drained}},
+                 []
+               )
+
+      assert eventually(fn ->
+               match?({:ok, %{status: :completed}}, Activities.view(coordinator, ref))
+             end)
+
+      assert {:messages, messages} = Process.info(root, :messages)
+      assert [_] = Enum.filter(messages, &match?({Activities, _, :lifecycle, _, _, _, _}, &1))
+
+      queued = :sys.get_state(coordinator).events |> :queue.to_list()
+      output = for {_, _, {:output, {:response, _, text, _}}} <- queued, do: text
+      assert length(output) in 1..32
+      assert Enum.all?(output, &(byte_size(&1) < 40))
+    after
+      :sys.resume(root)
+    end
+
+    assert_receive {Server, ^root, {:activity, %{ref: ^ref}, {:completed, :drained}}}, @timeout
+    assert {:ok, turn} = Server.input(root, "ping")
+    assert_receive {Server, ^root, {:response, ^turn, "pong", _}}, @timeout
+  end
+
+  test "coordinator loss is visible and the same Root can start a new Activity" do
+    root = start_root()
+    ref = start_activity(root, :waiting, as: :report)
+    Process.exit(activity_coordinator(root), :kill)
+
+    assert_receive {Server, ^root, {:activities_unavailable, :coordinator_stopped}}, @timeout
+    assert {:error, :unknown_activity} = Server.activity(root, ref)
+    refute start_activity(root, :waiting, as: :report) == ref
+  end
+
+  test "Activity output is shed when the application consumer is behind" do
+    consumer = spawn_link(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> Process.exit(consumer, :kill) end)
+    root = start_root(consumer: consumer)
+    Enum.each(1..256, &send(consumer, {:waiting, &1}))
+
+    assert :queued = GenServer.call(root, {:work, :announce, [on_result: :started]})
+    assert_receive {:start_result, {:ok, %{ref: ref}}}, @timeout
+    assert_receive {:handled_activity, ^ref, nil, :idle}, @timeout
+    assert {:messages, messages} = Process.info(consumer, :messages)
+    assert Enum.any?(messages, &match?({Server, ^root, {:activity, %{ref: ^ref}, :idle}}, &1))
+
+    refute Enum.any?(messages, fn message ->
+             match?({Server, ^root, {:activity, %{ref: ^ref}, {:output, _}}}, message)
+           end)
+  end
+
+  for coordinator_loss <- [false, true] do
+    @coordinator_loss coordinator_loss
+    @tag :tmp_dir
+    test "a submitted start recovers by command ID with coordinator loss #{@coordinator_loss}", %{
+      tmp_dir: path
+    } do
+      assert_interrupted_start_recovery(path, @coordinator_loss)
+    end
+  end
+
+  defp assert_interrupted_start_recovery(path, coordinator_loss?) do
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+    subject = Spectre.Identity.uuid7()
+
+    options = [
+      subject: subject,
+      identity: %{subject: subject},
+      consumer: self(),
+      init_arg: self(),
+      gam: [storage: {:disk, path}]
+    ]
+
+    assert {:ok, original} = Spectre.Supervisor.summon(supervisor, Agent, options)
+    assert_receive {:root_ready, ^original}, @timeout
+    start_activity(original)
+    coordinator = activity_coordinator(original)
+
+    :ok = :sys.suspend(supervisor)
+    :ok = :sys.suspend(coordinator)
+
+    try do
+      assert :queued =
+               GenServer.call(original, {:work, :waiting, [as: :queued, on_result: :started]})
+
+      assert eventually(fn ->
+               {:messages, messages} = Process.info(coordinator, :messages)
+
+               Enum.any?(messages, fn
+                 {:"$gen_call", _, {:start, _, _, _}} -> true
+                 _ -> false
+               end)
+             end)
+
+      crash_root(original, :after_submit, :after_submit)
+      if coordinator_loss?, do: Process.exit(coordinator, :kill)
+    after
+      if Process.alive?(coordinator), do: :sys.resume(coordinator)
+      :sys.resume(supervisor)
+    end
+
+    assert_receive {:root_ready, replacement}, @timeout
+    refute original == replacement
+    assert_recovered_start(replacement, coordinator_loss?)
+
+    assert {:ok, turn} = Server.input(replacement, "ping")
+    assert_receive {Server, ^replacement, {:response, ^turn, "pong", _}}, @timeout
+  end
+
+  defp assert_recovered_start(root, true) do
+    assert_receive {:start_result, {:error, :activity_start_outcome_unknown}}, @timeout
+    assert {:ok, []} = Server.activities(root)
+  end
+
+  defp assert_recovered_start(root, false) do
+    assert_receive {:start_result, {:ok, %{ref: ref, key: :queued}}}, @timeout
+    assert {:ok, %{ref: ^ref, status: :running}} = Server.activity(root, :queued)
+    assert {:ok, [_, _]} = Server.activities(root)
   end
 
   test "two unnamed Activities run independently and the Root survives a child crash" do
@@ -242,6 +415,11 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
 
     assert_receive {:control_result, {:ok, %{ref: ^ref, revision: ^revision}}}, @timeout
 
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref},
+                     {:signalled, _id, {:ok, %{ref: ^ref, revision: ^revision}}}}},
+                   @timeout
+
     stale = [if_revision: revision + 1, on_result: :control]
     assert :queued = GenServer.call(root, {:cancel, ref, stale})
     assert_receive {:control_result, {:error, :superseded}}, @timeout
@@ -272,6 +450,85 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
     assert :queued = GenServer.call(root, {:work, unknown, :waiting, [on_result: :started]})
     assert_receive {:start_result, {:error, {:unknown_stack_activity, ^unknown}}}, @timeout
     assert {:ok, []} = Server.activities(root)
+  end
+
+  test "invalid host control options are distinct from authorization and missing work" do
+    root = start_root()
+    ref = start_activity(root)
+
+    assert {:error, :invalid_activity_options} =
+             Server.signal_activity(root, ref, :wake, timeout: 1_000)
+
+    assert {:error, :invalid_activity_revision} =
+             Server.cancel_activity(root, ref, if_revision: -1)
+
+    assert {:error, :unknown_activity} = Server.cancel_activity(root, :missing)
+
+    assert {{:error, :activity_control_requires_context},
+            {:error, :activity_control_requires_context}} =
+             GenServer.call(root, {:incorrect_control, ref})
+
+    caller = Task.async(fn -> Server.signal_activity(root, ref, :wake) end)
+    assert {:error, :activity_not_authorized} = Task.await(caller)
+
+    assert :queued = GenServer.call(root, {:signal, :missing, :wake, [on_result: :control]})
+    assert_receive {:control_result, {:error, :unknown_activity}}, @timeout
+  end
+
+  test "start timeout preserves the later readiness event without promising rejection" do
+    root = start_root(worker_timeout: 400)
+    existing = start_activity(root)
+    coordinator = activity_coordinator(root)
+    assert :ok = :sys.suspend(coordinator)
+
+    try do
+      assert :queued =
+               GenServer.call(root, {:work, :waiting, [as: :slow, on_result: :started]})
+
+      assert_receive {:start_result, {:error, :activity_start_outcome_unknown}}, @timeout
+    after
+      :sys.resume(coordinator)
+    end
+
+    assert_receive {Server, ^root, {:activity, %{ref: ref, key: :slow}, :started}}, @timeout
+    assert {:ok, %{ref: ^ref, status: :running}} = Server.activity(root, :slow)
+    assert {:ok, activities} = Server.activities(root)
+    assert Enum.sort(Enum.map(activities, & &1.ref)) == Enum.sort([existing, ref])
+  end
+
+  test "a callback control can finish after its worker deadline" do
+    root = start_root(worker_timeout: 500)
+    ref = start_activity(root)
+    %{managed_owner: managed} = :sys.get_state(root)
+    %{domain: domain} = :sys.get_state(managed)
+    assert :ok = :sys.suspend(domain)
+
+    try do
+      assert :queued = GenServer.call(root, {:cancel, ref, [on_result: :control]})
+      assert_receive {:control_result, {:error, :activity_control_outcome_unknown}}, @timeout
+    after
+      :sys.resume(domain)
+    end
+
+    assert_receive {Server, ^root, {:activity, %{ref: ^ref}, :cancelled}}, @timeout
+    assert {:ok, %{status: :cancelled}} = Server.activity(root, ref)
+  end
+
+  test "a coordinator that cannot answer is distinguishable from one with no work" do
+    root = start_root()
+    ref = start_activity(root)
+    coordinator = activity_coordinator(root)
+    assert :ok = :sys.suspend(coordinator)
+
+    try do
+      assert {:error, :activity_owner_unavailable} = Server.activities(root)
+      assert :queued = GenServer.call(root, {:signal, ref, :wake, [on_result: :control]})
+      assert_receive {:control_result, {:error, :activity_owner_unavailable}}, @timeout
+    after
+      :sys.resume(coordinator)
+    end
+
+    assert {:ok, [%{ref: ^ref, status: :running}]} = Server.activities(root)
   end
 
   test "an invalid terminal callback fails its Activity before executing a queued response" do
@@ -469,7 +726,7 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
 
     assert {:ok, _} = Server.signal_activity(root, parent, {:cancel_child, sibling})
 
-    assert_receive {Server, ^root, {:activity, %{ref: ^parent}, {:failed, :inactive_activity}}},
+    assert_receive {Server, ^root, {:activity, %{ref: ^parent}, {:failed, :unknown_activity}}},
                    @timeout
 
     assert {:ok, %{status: :running}} = Server.activity(root, sibling)
@@ -527,6 +784,29 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
     assert [] = publication_outcomes(root)
   end
 
+  test "a timed out Activity consent decision can still be applied" do
+    root = start_publication_root()
+    ref = start_activity(root, {:publish, "D12"})
+    presentation = presentation_ref()
+    present(root, ref, presentation)
+
+    child = activity_pid(root, ref)
+    assert :ok = :sys.suspend(child)
+
+    try do
+      assert {:error, :decision_outcome_unknown} =
+               Server.decide(root, nil, presentation, :confirm)
+    after
+      :sys.resume(child)
+    end
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref}, {:completed, :ordinary_publication}}},
+                   @timeout
+
+    assert [%{status: :succeeded}] = publication_outcomes(root)
+  end
+
   test "the revised Activity observes the effect admitted before a revision" do
     Process.register(self(), __MODULE__)
     root = start_publication_root()
@@ -537,6 +817,16 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
     assert {:ok, _} = Server.decide(root, nil, presentation, :confirm)
     assert_receive {:publication_started, executor}, @timeout
     on_exit(fn -> send(executor, :release_publication) end)
+
+    %{workers: workers} = :sys.get_state(activity_pid(root, ref))
+
+    assert [%{command_id: id}] =
+             for({_, %{kind: :confirm_pending} = worker} <- workers, do: worker)
+
+    %{managed_owner: managed} = :sys.get_state(root)
+    %{journal: journal} = :sys.get_state(managed)
+    key = {:spectre_gam_command, id}
+    assert {:ok, _} = Store.fetch(journal, key)
 
     revise_activity(root, ref)
     send(executor, :release_publication)
@@ -549,6 +839,7 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
 
     refute_receive {Server, ^root, {:activity, %{ref: ^ref}, {:completed, :ordinary_publication}}}
     assert [%{status: :succeeded}] = publication_outcomes(root)
+    assert eventually(fn -> Store.fetch(journal, key) == :not_found end)
   end
 
   for termination <- [:cancel, :crash, :unaccepted_result] do
@@ -622,6 +913,32 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
            )
 
     assert {:ok, _} = store.fetch(owner, key)
+  end
+
+  @tag :tmp_dir
+  test "terminal eviction retires the old Activity fence from durable storage", %{tmp_dir: path} do
+    root =
+      start_root(identity: %{subject: Spectre.Identity.uuid7()}, gam: [storage: {:disk, path}])
+
+    first = start_activity(root)
+    :sys.replace_state(activity_coordinator(root), &%{&1 | terminal_limit: 1})
+
+    %{managed_owner: owner} = :sys.get_state(root)
+    %{domain: domain, refs: %{domain: domain_ref}} = :sys.get_state(owner)
+    %{activity_fence: {_token, store}} = :sys.get_state(domain)
+    first_fence = {:spectre_activity_fence, domain_ref, first}
+
+    assert {:ok, _} = Server.cancel_activity(root, first)
+    assert_receive {Server, ^root, {:activity, %{ref: ^first}, :cancelled}}, @timeout
+    assert {:ok, _} = Store.fetch(store, first_fence)
+
+    second = start_activity(root)
+    assert {:ok, _} = Server.cancel_activity(root, second)
+    assert_receive {Server, ^root, {:activity, %{ref: ^second}, :cancelled}}, @timeout
+
+    assert {:error, :unknown_activity} = Server.activity(root, first)
+    assert eventually(fn -> Store.fetch(store, first_fence) == :not_found end)
+    assert {:ok, _} = Store.fetch(store, {:spectre_activity_fence, domain_ref, second})
   end
 
   for mode <- [:retry, :memory] do

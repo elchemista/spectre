@@ -34,7 +34,13 @@ defmodule Spectre.Integration do
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
-  @doc "Registers a provider for a behaviour. Its options are immutable installation data."
+  @doc """
+  Registers a provider for a behaviour.
+
+  Supply the behaviour module as `role`, its implementation as `provider`,
+  and immutable installation options. An Agent selects one provider for each
+  service role.
+  """
   @spec service(t(), module(), module(), keyword()) :: t()
   def service(%__MODULE__{} = integration, role, provider, options \\ []) do
     services = put_unique!(integration.services, role, {provider, options}, :service)
@@ -47,9 +53,14 @@ defmodule Spectre.Integration do
   The adapter implements the existing `prepare/3`, `project/2` and, for
   cognitive tools, `invoke/3` callbacks. `governed:` names a GAM operation
   whose executor and authority come from the existing effect registration and
-  host configuration. Cognitive tools default to `retry: :never`.
+  host configuration. Cognitive tools accept `retry: :safe` for work that
+  can be repeated after interrupted execution and default to `retry: :never`.
+  `max_bytes:` bounds the encoded tool data and defaults to the checkpoint
+  limit.
 
-  `args:` lists required named fields and their JSON types. `description:`
+  `args:` lists required named fields and their JSON types. Supported types
+  are `:string`, `:integer`, `:number`, `:boolean`, `:object`, `:array`
+  and `{:array, item_type}`. `description:`
   and `access: :subject_scoped` describe the tool for callers. The adapter is
   responsible for validating input and enforcing subject scope. `helper:`
   optionally generates a Server helper referencing the same execution binding.
@@ -74,7 +85,7 @@ defmodule Spectre.Integration do
     %{integration | tools: tools}
   end
 
-  @doc "Registers a flow that Agents can expose to their router."
+  @doc "Registers a `Spectre.Flow.Port` module under a package scope. An Agent must expose the scope to route input to it."
   @spec flow(t(), atom(), module()) :: t()
   def flow(%__MODULE__{} = integration, name, module) do
     validate_name!(name)
@@ -85,9 +96,11 @@ defmodule Spectre.Integration do
   @doc """
   Declares an Activity type that can be started on demand.
 
-  `tools:` narrows the tool scope and `requires:` lists the scoped tools
-  needed for a start. `allow_children:` enables explicit subactivity starts
-  and can list the allowed Activity types.
+  The module uses `Spectre.Activity`. `tools:` defaults to `:all` within
+  the host's scope and also accepts a list of scoped tool references.
+  `requires:` defaults to `[]` and lists the scoped tools needed to start.
+  `allow_children:` defaults to `false` and accepts `true` or a list of
+  allowed Activity types for explicit subactivity starts.
   """
   @spec activity(t(), atom(), module(), keyword()) :: t()
   def activity(%__MODULE__{} = integration, name, module, options \\ []) do

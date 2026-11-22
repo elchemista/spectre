@@ -19,6 +19,14 @@ defmodule Spectre.Operation.Wait do
           metadata: map()
         }
 
+  @doc """
+  Builds a portable wait for `:human`, `:timer`, `:event`, `:retry`,
+  `:reconciliation`, or `:external` work.
+
+  Options are `:id` (a generated UUID by default), `:key`, `:due_at` (an
+  absolute millisecond timestamp), `:payload`, `:reason`, `:generation`, and
+  `:metadata`.
+  """
   @spec new(atom(), keyword()) :: t()
   def new(kind, opts \\ []) when kind in @kinds and is_list(opts) do
     due_at = Keyword.get(opts, :due_at)
@@ -40,6 +48,7 @@ defmodule Spectre.Operation.Wait do
     validate!(wait)
   end
 
+  @doc "Checks a wait's identity, kind, optional timestamp and generation, metadata, and portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = wait) do
     cond do
@@ -64,6 +73,7 @@ defmodule Spectre.Operation.Wait do
     end
   end
 
+  @doc "Returns a valid wait or raises `ArgumentError`."
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = wait) do
     case validate(wait) do

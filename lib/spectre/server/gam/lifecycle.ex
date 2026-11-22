@@ -49,6 +49,8 @@ defmodule Spectre.Server.GAM.Lifecycle do
   @digest_binding "spectre_server_lifecycle_event_digest"
 
   @doc "Builds host-observed Evidence inside the Domain's authenticated ingress callback."
+  @spec evidence(SubmissionContext.t(), map(), integer()) ::
+          {:ok, Evidence.t()} | {:error, term()}
   def evidence(%SubmissionContext{} = context, event, observed_at) when is_integer(observed_at) do
     with {:ok, digest} <- validate(event),
          :ok <- matching_subject(event, context) do
@@ -65,6 +67,10 @@ defmodule Spectre.Server.GAM.Lifecycle do
   def evidence(_context, _event, _observed_at), do: {:error, :invalid_lifecycle_observation}
 
   @doc "Finds or records one immutable phase through normal authenticated GAM observation."
+  @spec record(Scope.t(), map(), keyword()) ::
+          {:lifecycle_recorded,
+           %{event_id: binary(), event_digest: binary(), evidence_refs: [binary()]}}
+          | {:error, term()}
   def record(%Scope{} = scope, event, opts) when is_list(opts) do
     with {:ok, digest} <- validate(event),
          :ok <- matching_subject(event, scope.context) do
@@ -92,6 +98,7 @@ defmodule Spectre.Server.GAM.Lifecycle do
   end
 
   @doc "Validates the closed, portable host event and returns its exact digest."
+  @spec validate(term()) :: {:ok, binary()} | {:error, term()}
   def validate(event) when is_map(event) and not is_struct(event) do
     cond do
       Enum.any?(@required, &(not Map.has_key?(event, &1))) ->

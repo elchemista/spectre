@@ -8,6 +8,7 @@ defmodule Spectre.GAM.Clock do
 
   alias Spectre.GAM.Adapter
 
+  @doc "Returns the trusted current time as non-negative UTC milliseconds since the Unix epoch."
   @callback now() :: non_neg_integer()
 
   @doc false

@@ -19,15 +19,18 @@ defmodule Spectre.GAM.Ledger.Store do
   @type domain_ref :: Spectre.GAM.Ledger.domain_ref()
   @type batch_id :: Spectre.GAM.Ledger.batch_id()
 
+  @doc "Atomically appends a batch at its expected predecessor revision and returns the committed revision."
   @callback append(domain_ref(), batch_id(), [map()], non_neg_integer(), keyword()) ::
               {:ok, non_neg_integer()}
               | {:error, :conflict}
               | {:error, :ambiguous}
               | {:error, term()}
 
+  @doc "Loads a coherent history snapshot for the Domain, or returns `:not_found`."
   @callback load(domain_ref(), keyword()) ::
               :not_found | {:ok, Spectre.GAM.Ledger.snapshot()} | {:error, term()}
 
+  @doc "Optionally reads entries strictly after a revision and returns the corresponding snapshot head."
   @callback load_from(domain_ref(), non_neg_integer(), keyword()) ::
               :not_found | {:ok, Spectre.GAM.Ledger.snapshot()} | {:error, term()}
 
@@ -107,9 +110,11 @@ defmodule Spectre.GAM.Ledger.Store do
   def read_batch(_store, _domain_ref, _revision, _opts),
     do: {:error, :invalid_ledger_cursor}
 
+  @doc "Looks up a previously committed idempotency batch by its Domain and batch ID."
   @callback lookup_batch(domain_ref(), batch_id(), keyword()) ::
               :not_found | {:ok, Spectre.GAM.Ledger.batch_info()} | {:error, term()}
 
+  @doc "Exports one coherent Domain snapshot in the canonical GAM ledger format."
   @callback export(domain_ref(), keyword()) ::
               :not_found | {:ok, map()} | {:error, term()}
 

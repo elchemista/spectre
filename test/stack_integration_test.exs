@@ -442,6 +442,17 @@ defmodule Spectre.Stack.IntegrationTest do
              %{Selector => {Select, []}}
   end
 
+  test "Doctor reports typed binding counts without starting Activities" do
+    assert {:ok, report} = Spectre.Doctor.run(stack: LibraryStack)
+
+    assert %{
+             status: :ok,
+             details: %{
+               integration_bindings: %{services: 1, tools: 4, flows: 0, activities: 2}
+             }
+           } = Enum.find(report.checks, &(&1.id == "stack.compatibility"))
+  end
+
   test "rebuilding a Stack rejects inconsistent tool aliases and invalid metadata" do
     assert {:ok, installation} = Definition.installation(LibraryStack, :library)
 

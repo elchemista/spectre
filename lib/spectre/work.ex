@@ -88,6 +88,7 @@ defmodule Spectre.Work do
   end
 
   @doc "Registers a stable operation in this Work's closed catalog."
+  @spec operation(Macro.t(), Macro.t()) :: Macro.t()
   defmacro operation(id, opts) do
     id = evaluate(id, __CALLER__)
     opts = evaluate(opts, __CALLER__)
@@ -96,6 +97,7 @@ defmodule Spectre.Work do
   end
 
   @doc "Registers a stable executor and its validation/lifecycle contract."
+  @spec operation(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro operation(id, executor, opts) do
     id = evaluate(id, __CALLER__)
     executor = evaluate(executor, __CALLER__)
@@ -104,6 +106,7 @@ defmodule Spectre.Work do
   end
 
   @doc "Allows one operation from the Agent's immutable application registry."
+  @spec uses_operation(Macro.t()) :: Macro.t()
   defmacro uses_operation(id) do
     id = evaluate(id, __CALLER__)
 

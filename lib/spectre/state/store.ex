@@ -12,9 +12,16 @@ defmodule Spectre.State.Store do
   ambiguous because the failure may have happened after the durable commit.
   """
 
+  @doc "Loads durable state for the normalized input and Agent module using the adapter options."
   @callback load(Spectre.Input.t(), module(), keyword()) ::
               {:ok, Spectre.State.t() | map() | String.t()} | {:error, term()}
 
+  @doc """
+  Persists the new state if the stored revision equals the expected prior
+  revision. The normalized input and Agent module identify the state scope.
+  Return `:ok` to accept the proposed state, or `{:ok, state}` with the
+  persisted representation.
+  """
   @callback compare_and_swap(
               Spectre.State.t(),
               non_neg_integer(),

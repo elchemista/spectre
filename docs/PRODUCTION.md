@@ -7,16 +7,25 @@ and follow [Migration](MIGRATING_TO_0_4.md) when changing runtime ownership.
 
 ## Supervise resources and conversation owners
 
-Start the named Stack runtime and application Servers under supervision as shown
-in [Installation](INSTALLATION.md#otp-supervision). Give fixed Server children
-distinct `id:` values. `Spectre.summon/1` supplies local per-subject ownership for
-Agents with a `server:` binding.
+Supervise each Root Server. When a package declares `child_specs/2`, start the
+named Stack runtime that owns those resources and pass it in `stack_runtime:`.
+Give fixed Server children distinct `id:` values. `Spectre.summon/1` supplies
+local per-subject ownership for Agents with a `server:` binding.
+[Supervisor setup](INSTALLATION.md#otp-supervision).
 
 A local registry is not a distributed placement or ownership protocol. The host
 must ensure exclusive ownership of each durable namespace and provide fencing
 appropriate to its database and deployment topology. Independent agents require
-distinct identities, Domains and checkpoint namespaces. Share a GAM Domain only
-through an intentional root/Skill relationship.
+distinct identities, Domains and checkpoint namespaces. A Root shares its
+GAM Domain with its mounted Skills and started Activities.
+
+A supervised replacement Root can reattach to the live Managed GAM owner on the
+same node. `gam: [shutdown_timeout: milliseconds]` bounds that owner's wait
+after losing the Root. Durable cold recovery uses checkpoint and GAM
+reconciliation, including a fresh presentation for recovered consent. Use
+`Spectre.Server.activities(root)` from the authorized consumer to see the
+execution references and revisions of current work.
+[Activity lifecycle](AGENT_SERVER.md#run-a-background-activity).
 
 Keep portable state in assigns and process handles in private state. Shared model,
 browser, Repo and other clients belong to supervised Stack resources. Provider
@@ -31,6 +40,7 @@ Server checkpoints:
 - `{:disk, path}` for durable local history.
 - `:ledger` for a configured Ledger resource, with application-owned Repo and
   migrations installed before startup.
+- `{MyApp.Storage, reference}` for your own unified Store provider.
 
 Database persistence does not automatically protect payload contents. Configure
 `payload_store` when operation arguments, consent material, assigns or other
@@ -42,6 +52,10 @@ Restart reuses and verifies the exact authority configuration. Do not reuse an
 existing namespace with changed identity or operation policy. Upgrading database
 projection schemas requires an application migration; selecting Ledger does not
 convert an old disk history.
+
+When upgrading a compiled 0.4.0 Server, rehearse the checkpoint migrator
+against a backup. Drain running effects and verify the expected old and new
+definition fingerprints. [Upgrade a durable AgentServer](INSTALLATION.md#upgrading-a-durable-agentserver).
 
 ## Handle database loss explicitly
 
@@ -68,10 +82,17 @@ close, approval expiry or authority revocation cannot erase an already committed
 Act or unresolved Duty. Configure independent review only when your application
 has an authenticated reviewer role and real supporting evidence.
 
-The consumer must acknowledge actual rendering separately from the human's choice.
-Bind UI controls to the exact Skill, pending record and presentation revision;
-never derive authority from model-generated text. See [External approval](EXTERNAL_APPROVALS.md)
-for transport-independent remote consent.
+The consumer acknowledges rendering separately from the human's choice.
+Bind consent controls to the exact Presentation and its owner. For a normal
+question in an Activity, bind the reply to its execution reference and
+pending ID/revision. For a governed command in that Activity, send the
+decision through the Root using the Presentation reference. [Activity consent](MANAGED_GAM.md#consent-from-an-activity),
+[transport-independent external approval](EXTERNAL_APPROVALS.md).
+
+Test an Activity revision before admission and after admission. A revision
+invalidates an earlier pending consent. Effects already admitted retain their
+original identity and may report outcomes after the Activity ends. Reconcile
+those outcomes independently of whether the UI still shows a running Activity.
 
 ## Bound provider waits and cancellation
 
@@ -104,10 +125,11 @@ Duties, proof groups and full-history reads can still grow. RAM-only operation
 retains the complete projection. Application assigns and configured Server caches
 have their own lifetimes; database persistence does not automatically evict them.
 
-Use idle hibernation where it helps, and measure memory, referenced binaries,
-reductions and mailboxes after warmup and cleanup. Hibernation compacts a process;
-it does not implement passivation or discard history. [Profiling](OTP_PROFILE_0_4.md)
-contains the reproducible probes and their limits.
+Use idle hibernation where it helps compact process memory. Measure memory,
+referenced binaries, reductions, mailboxes and database writes after warmup
+and cleanup. Include parallel missions and repeated cancellation. Track
+latency for unrelated chat turns as Activities run. [Profiling](OTP_PROFILE_0_4.md)
+contains reproducible probes and their limits.
 
 ## Deploy a fixed candidate
 

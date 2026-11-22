@@ -1,18 +1,21 @@
-# Skills in 0.4
+# Skills and mounted Servers
 
-A Skill packages reusable routes and binds an ordinary `Spectre.Server` callback
-module. Mounting it creates a supervised GenServer with its own assigns, private
-state, workers, pending intentions and checkpoint. Its governed actions enter
-**the same GAM Domain as its Agent**, through `Spectre.Server.GAM`.
+A Skill packages reusable routes. Set `server:` to give each mount a supervised
+GenServer with its own assigns, private state, workers, pending intentions and
+checkpoint. Omit `server:` to run the declared routes in the Root. All governed
+operations use the Agent's shared GAM Domain and the mount's allowed operations.
 
-This process belongs to a mount that specifies `server:`. A declarative Skill can omit that binding and leave dispatch to the root Server. [See both callback keys and the options for flow, route and mount](SERVER_CALLBACKS.md#flow-route-and-skill-options).
-
-This is the 0.4 AgentServer path. The [0.3 Skill guide](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/SKILLS_0_3.md),
-[generational Skill state](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/SKILL_STATE.md) and [data-defined runtime Skills](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/RUNTIME_SKILLS.md)
-describe compatibility APIs; their Instance snapshots are not converted into
-Server checkpoints.
+Choose a Skill for a reusable part of the conversation, such as billing with
+its own pending refund. An exposed Stack Flow runs inside the conversation
+owner. An Activity starts on demand with a ref and a lifecycle, such as one
+long-running report. [Reuse a Flow or start an Activity](AGENT_SERVER.md#run-a-background-activity).
 
 ## Declare routes, then implement behavior
+
+The example assumes an application Stack named `MyApp.AI` that registers the
+governed refund operation. Its parent Agent has a callback module named
+`MyApp.SupportServer`. The billing mount uses the `MyApp.BillingServer`
+implementation below.
 
 ```elixir
 # Reusable declaration: the mount name is chosen by each Agent.
@@ -45,7 +48,7 @@ defmodule MyApp.SupportAgent do
 end
 
 defmodule MyApp.BillingServer do
-  use Spectre.Server, tools: MyApp.AI
+  use Spectre.Server
 
   @impl true
   def handle_flow({:billing, :refund}, _input, ctx) do
@@ -59,8 +62,12 @@ defmodule MyApp.BillingServer do
   @impl true
   def handle_pending(%{kind: :consent} = pending, input, ctx) do
     case String.downcase(String.trim(input.text)) do
-      "yes" -> confirm_pending(ctx, pending.id)
-      "no" -> reject_pending(ctx, pending.id)
+      answer when answer in ["yes", "confirm", "confermo", "si", "sì"] ->
+        confirm_pending(ctx, pending.id)
+
+      answer when answer in ["no", "cancel", "annulla"] ->
+        reject_pending(ctx, pending.id)
+
       _ ->
         ctx
         |> close_pending_after(pending.id, 120_000, reason: :topic_changed)
@@ -86,7 +93,25 @@ defmodule MyApp.BillingServer do
 end
 ```
 
-Trace the refund: `on :refund` inside `flow :billing` selects the local key `{:billing, :refund}`. The mount name is chosen independently by `as:`. Here `protected: true` asks Managed GAM to require confirmation when the callback proposes an operation. The mount allowlist and root policy decide what can be proposed. `on_result: :refunded` is the tag returned with the outcome, including rejection. The status route can reply immediately.
+The Agent chooses recognition strategies for the mount. `:regex` matches the
+declared patterns. `:intent_dataset` can use the Agent's configured dataset.
+`:embedding` uses a configured encoder and `semantic_examples:`.
+`:llm_classifier` uses the Agent's named LLM classifier. Wire those providers
+in the Root Agent or choose just `router strategies: [:regex]` for the literal
+demo phrases. [Configure the router](ROUTING.md).
+
+`on :refund` inside `flow :billing` selects the local key `{:billing, :refund}`.
+`as: :billing` separately names the mount. `protected: true` requires
+confirmation for governed proposals on the refund route. `governed: [:refund]`
+limits proposals to that operation within the Root's configured policy.
+`:refunded` is the continuation tag chosen by `on_result:` and receives
+success or rejection. `prompt_root:` lets the Skill declare its prompt asset
+directory. The status route replies with ordinary text.
+
+The custom pending handler accepts both typed responses and the normalized
+decision words dispatched by `Server.decide/4`. On another topic, it starts a
+120,000 ms closure schedule and reroutes the message after suspending the refund.
+`reason: :topic_changed` records why. [Pending intentions and timers](PENDING_LIFECYCLE.md).
 
 `handle_flow` receives local `{flow, intent}` keys. `ctx.routing` retains the
 mounted route, including `owner: MyApp.BillingSkill` and `scope: {:skill, :billing}`.
@@ -301,10 +326,9 @@ and Lab running through the same callback/runtime/GAM path.
 ## Try the process tree interactively
 
 The [LiveView showcase](DEMO.md) mounts Research and Knowledge Skills using all
-nine installed packages. It shows actual pending identities, stream previews,
-local email receipts and the shared GAM projection. Spectre automatically creates
-the Domain and stores its authority history on local disk. Each browser connection
-uses a new identity; reconnect does not silently restore an earlier session.
+nine installed packages. It shows pending identities, stream previews, local
+email receipts and the shared GAM projection. PostgreSQL stores the history
+and checkpoints. Each browser session has its own identity.
 
 ## Prompt roots in Skill Servers
 

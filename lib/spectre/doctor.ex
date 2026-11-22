@@ -18,6 +18,7 @@ defmodule Spectre.Doctor do
   alias Spectre.Router.Adapter.Diagnostics, as: RouterAdapterDiagnostics
   alias Spectre.Stack.Conformance, as: StackConformance
   alias Spectre.Stack.Definition, as: StackDefinition
+  alias Spectre.Stack.Tools, as: StackTools
 
   @contract_version 1
   @options [
@@ -42,8 +43,9 @@ defmodule Spectre.Doctor do
   Runs runtime, Foundation, Agent, Stack, package, and store diagnostics.
 
   AgentServer bindings and mounted Skill Servers are checked against required
-  callbacks without invoking them. Runtime GAM/storage options and live backend
-  availability are outside these compiled-contract diagnostics.
+  callbacks without invoking them. Stack validation also checks declared
+  integrations and reports their binding counts. Runtime GAM/storage options
+  and live backend availability are outside these compiled-contract diagnostics.
 
   When `:agent` is present, optional `:router_opts` diagnoses the effective
   Router Adapter order and availability under a trusted runtime override.
@@ -627,6 +629,7 @@ defmodule Spectre.Doctor do
         check(:ok, "stack.compatibility", :stack_definition_valid, %{
           module: inspect(stack),
           package_count: length(definition.installations),
+          integration_bindings: integration_counts(definition),
           digest: definition.digest
         })
 
@@ -639,6 +642,25 @@ defmodule Spectre.Doctor do
 
   defp stack_check(entries),
     do: matrix_check(entries, "stack.compatibility", :stack_matrix_valid, :stack_matrix_invalid)
+
+  defp integration_counts(definition) do
+    base = %{services: 0, flows: 0, activities: map_size(definition.activities)}
+
+    Enum.reduce(definition.installations, base, fn installation, counts ->
+      integration = installation.adapters[:integration] || %{}
+
+      Map.new(counts, fn {kind, count} ->
+        {kind, count + map_size(Map.get(integration, kind, %{}))}
+      end)
+    end)
+    |> Map.put(:tools, scoped_tool_count(definition.installations))
+  end
+
+  defp scoped_tool_count(installations) do
+    installations
+    |> StackTools.scoped_table!()
+    |> Enum.count(fn {_ref, binding} -> binding != :ambiguous end)
+  end
 
   defp packages_check(nil),
     do: check(:skipped, "packages.compatibility", :packages_not_requested)

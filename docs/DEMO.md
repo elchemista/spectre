@@ -1,7 +1,8 @@
 # Spectre 0.4 LiveView showcase
 
 The [demo application](https://github.com/elchemista/demo_spectre) runs an
-AgentServer and two independent Skill Servers against one shared GAM Domain.
+AgentServer, two mounted Skill Servers and on-demand Directive missions against
+one shared GAM Domain. The native mission path uses Core 0.4.1 and Directive 0.2.0.
 PostgreSQL/Ecto stores canonical history, persisted Domain records and scoped
 Server checkpoints. The demo is a separate Phoenix application, outside the
 Spectre package; its default deterministic model needs no provider key.
@@ -77,12 +78,37 @@ AgentServer is documented in [External approvals](EXTERNAL_APPROVALS.md),
 including an exchange without Pulse; a personal approver chat is not part of
 this UI.
 
+## Chat and native website missions
+
+Run with sibling Core and Directive checkouts using `SPECTRE_LOCAL_DEPS=1`.
+Restart the Phoenix server after updating either dependency so its VM loads
+the compiled modules.
+
+1. Start with conversation. The Root's chat prompt uses bounded history. The
+   LLM classifier can recognize a website mission in ordinary language.
+2. Ask the agent to analyze a supported public HTTP(S) site and prepare a draft.
+   Include the URL and what the email should accomplish. Directive runs as an
+   Activity while Root chat stays available. Lens observes the site. The mission
+   proposes `save_draft` when it has an observed contact.
+3. The first GAM Presentation asks to save the exact draft. The second, when
+   the request includes delivery, asks to send the saved content. Delivery
+   reaches Phoenix's local Swoosh mailbox at `/dev/mailbox`.
+4. If the Activity stops before admission of the send, use
+   `riprendi invio DRAFT_REF` in the same browser session. Copy `DRAFT_REF` from
+   **Casella**. The new Activity loads the saved draft and requests a fresh
+   consent. If the previous send was admitted, reconcile its recorded Outcome
+   before deciding what to do next.
+
+[Activity controls](AGENT_SERVER.md#run-a-background-activity),
+[Managed consent lifecycle](MANAGED_GAM.md).
+
 ## History, payloads and lifetime
 
 Each browser connection starts a fresh identity, Domain and Server tree.
 Closing it stops that tree but retains PostgreSQL history and local Mnemonic
 files. Reloading creates a new session; it does not reattach an old account.
-The demo has no account authentication and opens only its local fixture URLs.
+The demo uses local browser sessions. The Skill walkthrough uses its bundled
+fixture. The native website mission applies the demo's public URL policy.
 
 The [PostgreSQL examples](https://github.com/elchemista/demo_spectre#postgresql-and-history)
 show bounded Ecto queries, canonical verification and paginated Domain reads

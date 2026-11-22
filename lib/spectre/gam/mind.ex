@@ -40,10 +40,15 @@ defmodule Spectre.GAM.Mind do
   alias Spectre.GAM.Mind.{Derivation, Turn}
 
   @candidate_fields Candidate.request_fields()
+  @doc "Returns the stable identifier of this deliberation adapter."
   @callback ref() :: String.t()
+
+  @doc "Produces Candidate proposals from a sealed Turn and deliberation options."
   @callback deliberate(Turn.t(), keyword()) ::
               {:ok, Candidate.t() | map() | keyword() | [Candidate.t() | map() | keyword()]}
               | {:error, term()}
+
+  @doc "Produces Candidate proposals and the adapter's next application state."
   @callback deliberate(Turn.t(), term(), keyword()) ::
               {:ok, Candidate.t() | map() | keyword() | [Candidate.t() | map() | keyword()],
                term()}

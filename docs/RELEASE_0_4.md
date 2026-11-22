@@ -1,4 +1,4 @@
-# Verifying the 0.4 release
+# Verifying Spectre 0.4.1
 
 Use a fixed set of commits for core and every companion package. Package
 versions are independent; [Installation](INSTALLATION.md) explains dependency
@@ -23,6 +23,12 @@ the runtime and deployment responsibilities. CI never publishes packages.
 ## Compatibility boundaries to exercise
 
 - RAM-only agents work without Ledger or a database.
+- An unnamed Activity gets its own execution reference. Two missions can run
+  while the Root answers chat. Targeted replies, revision and cancellation
+  preserve correlation. An admitted effect retains its original Outcome.
+- A 0.4.0 checkpoint can resume on 0.4.1 after the host verifies a changed
+  definition with `checkpoint_migrator:`. Run the pinned checkpoint fixture
+  and rehearse the same migration against a copy of production storage.
 - Ledger-backed Domains release historical projection records after use;
   active work and full-history queries can still consume memory.
 - An external approval satisfies consent only for its frozen request. It cannot
@@ -36,23 +42,18 @@ the runtime and deployment responsibilities. CI never publishes packages.
 - Instance/Run compatibility fixtures retain their recorded formats. Moving an
   application to Server requires the explicit [migration](MIGRATING_TO_0_4.md).
 
-## Publication handoff
+## Build the local package
 
-Commit the release changes, update pins, and let the corresponding remote
-workflows finish on those exact revisions. Core source and package links use
-the `0.4.0` tag, matching the repository's existing numeric tags. Each companion
-package uses its own version and release tag; publish dependencies first,
-including core and Ledger before Lab.
-
-From the verified core commit, the maintainer can run:
+From the Core checkout, use a fresh directory.
 
 ```sh
-mix hex.publish --dry-run
-git tag 0.4.0
-git push origin 0.4.0
-mix hex.publish
+package_dir="$(mktemp -d)"
+mix hex.build --unpack --output "$package_dir/spectre"
 ```
 
-The dry-run validates the package without publishing it. Tag only the commit
-that passed verification, and publish from the same clean checkout. The
-maintainer owns tags and Hex publication; release verification performs neither.
+`--unpack` writes the files and package metadata into a directory so they can
+be inspected. This is the same packaging step used by Core CI. When cutting the
+release, tag the verified Core revision as `0.4.1`, match each satellite's
+independent version, and update its pinned compatibility workflow before
+publishing dependent packages. Directive's native Activity API is in its
+`0.2.0` package.

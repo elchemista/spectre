@@ -82,24 +82,31 @@ defmodule Spectre.Inference.StreamAdapter do
   @type provider_metadata :: map()
   @type conformance_bound :: :transport_chunk | :parser_residual
 
+  @doc "Returns the profile's stream capabilities using the configured adapter options."
   @callback capabilities(term(), keyword()) :: MapSet.t(atom())
 
+  @doc "Opens a transport using the selected inference descriptor and returns adapter state and metadata."
   @callback open(descriptor(), keyword()) ::
               {:ok, adapter_state(), provider_metadata()} | {:error, term()}
 
+  @doc "Requests one item from a pull transport and returns the updated adapter state."
   @callback request_transport_item(adapter_state()) ::
               {:ok, adapter_state()} | {:error, term()}
 
+  @doc "Projects an owned mailbox message into normalized provider events and updated adapter state."
   @callback handle_transport(term(), adapter_state()) ::
               {:ok, [Spectre.Inference.ProviderEvent.t()], adapter_state()}
               | {:ignore, adapter_state()}
               | {:error, term(), adapter_state()}
 
+  @doc "Requests transport cancellation with the current state and reason."
   @callback cancel(adapter_state(), term()) :: :ok | {:error, term()}
 
+  @doc "Optionally resumes an attempt using its saved provider continuation and adapter options."
   @callback resume(descriptor(), term(), keyword()) ::
               {:ok, adapter_state(), provider_metadata()} | {:error, term()}
 
+  @doc "Optionally asks the provider to resolve an uncertain attempt from its saved reference."
   @callback reconcile(descriptor(), term(), keyword()) ::
               {:ok, term()} | :pending | :not_found | {:error, term()}
 
@@ -128,6 +135,7 @@ defmodule Spectre.Inference.StreamAdapter do
 
   @transport_capabilities [:pull_transport, :push_transport]
 
+  @doc "Validates the adapter's declared capabilities and the callbacks they require."
   @spec validate(module(), term(), keyword()) :: {:ok, MapSet.t(atom())} | {:error, term()}
   def validate(adapter, profile, opts \\ []) when is_atom(adapter) and is_list(opts) do
     cond do

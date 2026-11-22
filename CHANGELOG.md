@@ -7,6 +7,40 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
+## 0.4.1 — Unreleased
+
+### Added
+
+- Start, inspect, revise and cancel supervised Activities using the Agent's
+  Stack and GAM Domain. Independent jobs can run while the Root serves chat.
+- Declare services, tools, reusable flows and Activity types through
+  `Spectre.Integration`. Agents explicitly expose installed flows. Scoped
+  `call_tool` and generated helpers share the existing tool and GAM path.
+- Address replies to an exact Flow or Activity wait. Unmatched input can
+  still reach the Agent's normal router.
+- Inspect typed binding counts in Doctor and validate generated Installables
+  in a compiled Stack. Runnable chat and Documents examples use local fixtures.
+- Deliver Activity replies and previews with the Root's consumer envelope and
+  the Activity reference. Bound delivery while the Root or consumer is slow.
+- Count Activity steps per revision. Hosts can configure concurrency and idle
+  policies, and an Activity can observe terminal events from its own children.
+
+### Fixed
+
+- Include scoped tool adapters and exposed Flow Ports in checkpoint migration
+  detection using a compact fingerprint.
+- Preserve uncertain Activity start and consent outcomes across worker
+  timeouts, and route explicitly addressed Activity replies to their wait.
+
+### Compatibility
+
+- Existing helpers, store callbacks and checkpoint formats remain supported.
+  Recompiled 0.4.0 Servers can require the existing `checkpoint_migrator:`
+  when opening a durable checkpoint. A supervised Root restart can reattach
+  to the same Managed GAM Domain.
+- A revision retires earlier waits and pending consent. Effects already
+  admitted retain their original identity and report their outcome through GAM.
+
 ## 0.4.0 — 2026-11-17
 
 ### Added

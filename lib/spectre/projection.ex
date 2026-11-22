@@ -12,8 +12,13 @@ defmodule Spectre.Projection do
   alias Spectre.Definition.Ref
   alias Spectre.Projection.Audit
 
+  @doc "Returns the stable generator ID included in a projection's identity."
   @callback id() :: String.t()
+
+  @doc "Returns the positive generator version included in a projection's identity."
   @callback version() :: pos_integer()
+
+  @doc "Derives portable content deterministically from a canonical Definition and generator options."
   @callback project(Canonical.t(), keyword()) :: {:ok, term()} | {:error, term()}
 
   @enforce_keys [

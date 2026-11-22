@@ -15,6 +15,11 @@ defmodule Spectre.Operation.Request do
           metadata: map()
         }
 
+  @doc """
+  Builds a portable request for a stable operation ID and optional input.
+  Options are `:id` (a generated UUID by default), `:phase`, `:branch`, and
+  `:metadata`. Invalid fields or nonportable data raise `ArgumentError`.
+  """
   @spec new(atom() | String.t(), term(), keyword()) :: t()
   def new(operation, input \\ nil, opts \\ []) do
     unless (is_atom(operation) and not is_nil(operation)) or
@@ -37,6 +42,7 @@ defmodule Spectre.Operation.Request do
     validate!(request)
   end
 
+  @doc "Checks a request's identity, operation name, optional phase and branch, metadata, and portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = request) do
     cond do
@@ -49,6 +55,7 @@ defmodule Spectre.Operation.Request do
     end
   end
 
+  @doc "Returns a valid request or raises `ArgumentError`."
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = request) do
     case validate(request) do

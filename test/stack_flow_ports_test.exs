@@ -7,6 +7,9 @@ defmodule Spectre.StackFlowPortsTest do
   defmodule Read do
     use Spectre.Flow.Port
 
+    @server_helpers Keyword.get(__ENV__.functions, Spectre.Server, [])
+    def server_helpers, do: @server_helpers
+
     @impl true
     def routes, do: [on(:read, regex: ~r/^show (?<id>D[0-9]+)$/i)]
 
@@ -22,6 +25,9 @@ defmodule Spectre.StackFlowPortsTest do
 
     @impl true
     def handle_flow(:list, _input, ctx), do: ctx
+
+    @impl true
+    def handle_result(_tag, _result, ctx), do: respond(ctx, "Catalog fallback")
   end
 
   defmodule Documents do
@@ -61,6 +67,16 @@ defmodule Spectre.StackFlowPortsTest do
     use Spectre.Server
   end
 
+  defmodule EmptyRoutes do
+    def routes, do: []
+    def handle_flow(_key, _input, ctx), do: ctx
+  end
+
+  defmodule MalformedRoutes do
+    def routes, do: [:read]
+    def handle_flow(_key, _input, ctx), do: ctx
+  end
+
   defmodule PrivateAgent do
     use Spectre.Agent, stack: Stack, server: Root
     router(strategies: [:regex])
@@ -72,6 +88,59 @@ defmodule Spectre.StackFlowPortsTest do
 
     expose(:library)
     expose(flows: [{:catalog, :inventory}])
+  end
+
+  test "a Flow imports callback commands and leaves host calls explicit" do
+    helpers = Read.server_helpers()
+
+    for helper <- [call_tool: 4, respond: 2, signal_activity: 4, cancel_activity: 3] do
+      assert helper in helpers
+    end
+
+    for host_call <- [start_link: 1, input: 3, reset: 2, status: 1, deliver: 4] do
+      refute host_call in helpers
+    end
+  end
+
+  test "a Flow can own the fallback for all continuation tags" do
+    assert %{commands: [%{kind: :respond, args: ["Catalog fallback"]}]} =
+             ListDocuments.handle_result(:unmatched, :any, %Spectre.Server.Context{})
+  end
+
+  test "Flow registration rejects incomplete modules and malformed route declarations" do
+    alias Spectre.Integration
+
+    assert_raise ArgumentError, ~r/invalid Stack flow module/, fn ->
+      Integration.flow(Integration.new(), :browse, Root)
+    end
+
+    assert_raise ArgumentError, ~r/invalid routes .*\[\]/, fn ->
+      Integration.flow(Integration.new(), :browse, EmptyRoutes)
+    end
+
+    assert_raise ArgumentError, ~r/invalid Stack flow route: :read/, fn ->
+      Integration.flow(Integration.new(), :browse, MalformedRoutes)
+    end
+
+    for {label, options} <- [{"read", []}, {:read, [:not_keyword_options]}] do
+      assert_raise ArgumentError, ~r/invalid Stack flow route/, fn -> Port.on(label, options) end
+    end
+  end
+
+  test "an imported Flow binding must contain well-formed portable routes" do
+    assert_raise ArgumentError, ~r/invalid Stack flow binding/, fn ->
+      Port.validate!(%{module: Read, routes: []})
+    end
+
+    for route <- [:read, {:read, []}, {:read, [regex: [{:not_source_text, []}]]}] do
+      assert_raise ArgumentError, ~r/invalid Stack flow route/, fn ->
+        Port.validate!(%{module: Read, routes: [route]})
+      end
+    end
+
+    assert_raise ArgumentError, ~r/invalid Stack flow route/, fn ->
+      Port.rule_options!(:read)
+    end
   end
 
   test "installation alone does not change the visible routes" do

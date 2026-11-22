@@ -9,6 +9,12 @@ definitions, conversation ownership and tool execution. Follow the
 [0.3 → 0.4 migration guide](docs/MIGRATING_TO_0_4.md) before upgrading an existing
 application.
 
+Spectre 0.4.1 adds supervised background Activities and a Stack integration API.
+An agent can keep chatting while a mission runs. The host can inspect or revise
+that mission by its execution reference, and its governed operations use the
+same GAM Domain. [Run a background Activity](docs/AGENT_SERVER.md#run-a-background-activity).
+For persisted sessions, see [upgrading a durable AgentServer](docs/INSTALLATION.md#upgrading-a-durable-agentserver).
+
 ## What is GAM?
 
 **GAM stands for Governed Act Model.** It defines how an agent's proposal becomes
@@ -30,75 +36,50 @@ principles and [GAM in Spectre](docs/GAM.md) for their implementation.
 
 [Diagram source](docs/assets/readme-architecture.mmd).
 
-- **Stack** installs the capabilities available to the application: models,
-  browser access, memory and other tools.
-- **Agent** declares the router, flows and intents that recognize input and
-  select a route.
-- **Server** implements the callbacks for those routes and manages the
-  conversation's state, pending work and results inside an OTP process.
-
-For a conversation with no installed packages, `use Spectre.Agent, server: MyApp.Server` and `use Spectre.Server` suffice. Add a Stack when you install capabilities. [Build a helper for an existing billing client](docs/CUSTOM_STACK_TOOLS.md).
-
-The Server can ask workers to generate a response or use a tool. Operations on
-the application's governed surface go through GAM before their effect adapter
-can execute them.
+- **Stack** installs models, tools, reusable flows and Activity types. Omit the
+  Stack when the Agent only uses application callbacks or a directly configured
+  model.
+- **Agent** declares which routes the router can choose and which Stack flows
+  are visible. A route names the handler that will receive the message.
+- **Server** owns the conversation. Callbacks return a Context with state
+  changes and commands. Workers run model and tool calls. An Activity gets a
+  supervised process on demand and uses the Root's GAM Domain.
 
 ## Install
 
 Requires Elixir `~> 1.19`.
 
 ```elixir
-{:spectre, "~> 0.4.0"}
+{:spectre, "~> 0.4.1"}
 ```
 
 Run `mix deps.get` and commit `mix.lock`. [Installation](docs/INSTALLATION.md)
 covers optional packages, source dependencies and supervision.
 
-## Build an agent
+## Build a deterministic agent
 
-The code follows the diagram: first the Stack, then the Agent's router, then the
-Server's callbacks. The router combines explicit regex rules, semantic similarity
-through embeddings and a model that classifies input when earlier evidence is
-insufficient. `MyApp.Embeddings` and `MyApp.IntentModel` are application-supplied
-adapters: configure their models and credentials as described in
-[Routing](docs/ROUTING.md#host-providers) and
-[Behaviours and adapters](docs/BEHAVIOURS.md).
+This Agent recognizes pricing questions using local rules. The Server replies
+with application text. No model configuration is needed.
 
 ```elixir
-# 1. Stack: install any optional capabilities your application needs.
-defmodule MyApp.AI do
-  use Spectre.Stack
-end
-
-# 2. Agent: recognize intent using patterns, embeddings or a classifier model.
 defmodule MyApp.SupportAgent do
-  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
-  embedding MyApp.Embeddings
-  classifier :llm, MyApp.IntentModel, timeout: 8_000
-
-  router strategies: [:regex, :embedding, :llm_classifier]
+  use Spectre.Agent, server: MyApp.SupportServer
+  router strategies: [:regex, :bag, :jaro]
 
   flow :support do
     on(:pricing,
       regex: ~r/\b(price|pricing|cost)\b/i,
-      semantic_examples: ["How much does a subscription cost?"]
+      bag: ["subscription plans"],
+      jaro: ["monthly subscription"]
     )
-
-    on :technical,
-      semantic_examples: ["My API key stopped working", "I cannot sign in"]
   end
 end
 
-# 3. Server: handle the route selected by the Agent.
 defmodule MyApp.SupportServer do
-  use Spectre.Server, tools: MyApp.AI
+  use Spectre.Server
 
-  @impl true
   def handle_flow({:support, :pricing}, _input, ctx),
     do: respond(ctx, "Plans start at EUR 20 per month.")
-
-  def handle_flow({:support, :technical}, _input, ctx),
-    do: respond(ctx, "Tell me which error you see.")
 
   def handle_flow(:unmatched, _input, ctx),
     do: respond(ctx, "Ask me about pricing.")
@@ -115,18 +96,139 @@ after
 end
 ```
 
-The regex recognizes "What is the price?" directly. Other wording can match the
-examples through vector similarity; when that evidence is insufficient, the
-classifier model chooses among the declared intents. A selected route calls its
-Server handler. `input/3` returns an interaction ID; replies arrive asynchronously
-at the consumer. A successful early match can avoid a model call.
+`:support` is the flow and `:pricing` is the route inside it. Together they
+form the key in `handle_flow/3`. The router tries a pattern or compares the
+message against the `bag:` and `jaro:` examples. An unrecognized message
+reaches `:unmatched`. The second callback argument is a normalized
+`%Spectre.Input{}`. This handler ignores it because the response is fixed.
+The third is the current Context. Return it through `respond/2`.
 
-For a complete first run without configured providers, use the
-[model-free quickstart](docs/GETTING_STARTED.md).
+`server:` binds the Agent to its callback module. At startup `agent:` chooses
+the Agent and `consumer: self()` sends events to this caller. `input/2`
+acknowledges intake with an interaction ID. Match that ID in the asynchronous
+`:response` event. `text` is the reply and `_metadata` is its optional
+response metadata. The five-second receive timeout belongs to the caller.
+The same example is available with `mix run docs/examples/agent_server_quickstart.exs`.
 
 In an application, supervise the Server or use `Spectre.summon/1`
-for per-subject ownership. [Getting started](docs/GETTING_STARTED.md) covers
-these next steps and the generator.
+for per-subject ownership. [Getting started](docs/GETTING_STARTED.md).
+
+## Open chat with Directive missions
+
+Give the Agent a chat route and a mission route. An LLM classifier can recognize
+“Compare these markets and prepare a report” without a trigger word. Ordinary
+chat, including an unmatched message, generates a reply in the Root. A mission
+runs independently while the Root continues accepting chat.
+
+With `[:llm_classifier]`, an ordinary chat turn can call the model once for
+classification and again for the reply. Add a local recognition strategy
+when explicit patterns or reviewed examples can settle some routes.
+
+This example requires Spectre 0.4.1, Directive 0.2.0 and a host model adapter
+`MyApp.TextModel` implementing `Spectre.LLM.complete(prompt, options)`. A model
+can return `{:ok, text}` or `{:error, reason}`. Here one adapter is used for
+classification, replies and mission reasoning. You can configure separate
+adapters. [Model contracts and configuration](docs/PROVIDERS.md).
+
+```elixir
+defmodule MyApp.Workspace do
+  use Spectre.Stack
+  install Spectre.Directive
+end
+
+defmodule MyApp.Assistant do
+  use Spectre.Agent, stack: MyApp.Workspace, server: MyApp.AssistantServer
+
+  model MyApp.TextModel
+  classifier :llm, MyApp.TextModel
+  router strategies: [:llm_classifier]
+
+  flow :assistant do
+    on :chat, semantic_examples: ["How are you?", "Remind me what we discussed"]
+    on :mission, semantic_examples: ["Compare these markets and prepare a report"]
+  end
+end
+
+defmodule MyApp.AssistantServer do
+  use Spectre.Server, prompt_root: "priv/prompts"
+
+  def handle_flow({:assistant, :mission}, input, ctx) do
+    start_activity(ctx, {:directive, :mission}, %{
+      goal: input.text,
+      context: %{recent_turns: Map.get(ctx.assigns, :turns, [])}
+    })
+  end
+
+  def handle_flow({:assistant, :chat}, _input, ctx), do: chat(ctx)
+  def handle_flow(:unmatched, _input, ctx), do: chat(ctx)
+
+  def handle_result(:chat_reply, {:generated, %{text: text}}, ctx) do
+    turns = Map.get(ctx.assigns, :turns, []) ++ [%{user: ctx.input.text, assistant: text}]
+    ctx |> assign(:turns, Enum.take(turns, -6)) |> respond(text)
+  end
+
+  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+
+  defp chat(ctx) do
+    generate(ctx, :chat,
+      assigns: %{recent_turns: Map.get(ctx.assigns, :turns, [])},
+      on_result: :chat_reply
+    )
+  end
+end
+```
+
+Add `priv/prompts/chat.text.heex` to the app.
+
+```text
+Answer the latest message in the user's language. Use earlier turns as context.
+Earlier turns:
+<%= Spectre.Prompt.data(Spectre.JSON.encode!(@recent_turns)) %>
+Latest message:
+<%= Spectre.Prompt.data(@input.text) %>
+```
+
+- `stack:` selects the installed packages. `{:directive, :mission}` names
+  Directive's installation and its Activity type. Installing the package
+  registers the type. `start_activity/3` creates each execution.
+- `goal` is the user's request. `context` carries application data available
+  to the mission. This example supplies six recent chat turns and uses the
+  built-in Directive mission prompt. Include only the context the model needs.
+- `semantic_examples:` describe the intent to the classifier. To use them for
+  vector similarity as well, configure an embedder and enable `:embedding`.
+  A classified label selects a declared handler. Permissions come from the host.
+- `prompt_root:` locates the Root's prompts. `:chat` resolves the prompt shown
+  above. A custom Activity can set its own prompt root and otherwise uses
+  the Agent's configured root. `assigns:` adds template data for this
+  command. `on_result: :chat_reply`
+  sends the generation result to the matching callback clause. The tag is an
+  application name. It differs from the `:chat` route and prompt name.
+- The result handler records the generated text beside the input, keeps the
+  six most recent chat turns and replies. `super/3` delegates the other results
+  to Spectre, including the default failure reply. `Spectre.Prompt.data/1`
+  marks user content and history as data within the prompt.
+
+Call `Spectre.Server.input/2` on the same Root for chat and new missions.
+The consumer receives `{:activity, identity, :started}` inside
+`{Spectre.Server, root, event}`. `identity.ref` identifies this execution.
+Use `Spectre.Server.activities(root)` to list work. Target a reference with
+`Spectre.Server.signal_activity(root, ref, {:revise, notes})` or
+`Spectre.Server.cancel_activity(root, ref)`. Here `notes` is the new instruction.
+Wait for lifecycle events to show completion, failure or cancellation.
+For a message such as “Focus only on Italy,” have the UI or application choose
+the target execution and send a revision to that ref. When several missions
+could match, ask the user which one. In the example, the `:mission` route
+starts new work and the chat routes keep the conversation going.
+[Activity lifecycle, options and replies](docs/AGENT_SERVER.md#run-a-background-activity).
+
+This mission example reasons and asks questions. To give it an installed tool,
+pass a map such as `tools: %{"read_document" => {:documents, :read}}` in the
+mission arguments. `"read_document"` is the alias visible to the model.
+`{:documents, :read}` is the Stack binding chosen by the application. A governed
+tool goes through GAM. Use `scope:` on the start command to narrow access further.
+Directive consumes structured mission decisions using these aliases. Kinetic is
+an optional integration for interpreting Action Language and preparing proposals.
+[Runnable examples and Directive](docs/EXAMPLES.md).
 
 ## Routing strategies
 
@@ -143,29 +245,69 @@ strategies that suit your application:
 | `:local_classifier` | A local intent classifier's prediction. | A configured local classifier. |
 | `:llm_classifier` | A language model's choice among declared intents. | A configured intent model. |
 
-The example above combines regex, semantic matching and model classification.
-For a model-free router, select `[:regex, :bag, :jaro]` and declare `bag:` and
-`jaro:` phrases on each route; see the [local matching example](docs/ROUTING.md#local-string-matching).
-
-For semantic and model-based recognition, configure the adapters in the Agent
-and select the corresponding strategies:
+Combine deterministic routes with embedding and LLM fallback. Supply your
+embedding adapter and classifier model in the Agent.
 
 ```elixir
-# Inside an Agent; these adapters are supplied by your application.
+# Inside an Agent with regex and semantic_examples on its routes.
 embedding MyApp.Embeddings
-classifier :local, MyApp.IntentClassifier
 classifier :llm, MyApp.IntentModel
 
-router strategies: [
-  :regex, :intent_dataset, :bag, :jaro,
-  :embedding, :local_classifier, :llm_classifier
-]
+router strategies: [:regex, :embedding, :llm_classifier]
 ```
 
-The intent classifier and response model can be different models. You can also
-implement a custom router adapter, plug or arbitrator. [Routing](docs/ROUTING.md)
-explains configuration, thresholds, fallbacks and complete examples;
-[Behaviours and adapters](docs/BEHAVIOURS.md) explains the extension contracts.
+Regex recognizes explicit shortcuts. Embeddings compare vector similarity
+against route examples. Strong local evidence can select a route before the
+classifier is needed. [Router options and fallbacks](docs/ROUTING.md).
+
+## Extend Spectre with your own library
+
+For an existing document client, declare the integration once in the package.
+The client in this example is your application's `MyApp.DocumentClient`.
+
+```elixir
+defmodule MyApp.Documents do
+  use Spectre.Stack.Installable, id: :documents, version: "1.0.0"
+
+  @impl true
+  def integration(_config) do
+    Spectre.Integration.new()
+    |> Spectre.Integration.tool(:read, __MODULE__, args: [id: :string])
+  end
+
+  def prepare(:read, %{id: id}, _binding) when is_binary(id), do: {:ok, id}
+  def prepare(:read, %{"id" => id}, binding), do: prepare(:read, %{id: id}, binding)
+  def prepare(:read, _payload, _binding), do: {:error, :invalid_document_id}
+  def invoke(:read, id, _environment), do: MyApp.DocumentClient.fetch(id)
+  def project(:read, result), do: {:ok, result}
+end
+```
+
+The package ID is the default local name. `version:` identifies the library
+release in the installable manifest. `install MyApp.Documents` adds it to the
+Stack. `integration/1` receives the compiled installation configuration.
+`:read` names the operation, `__MODULE__` supplies its adapter and `args:`
+describes the public argument schema. `prepare/3` validates and normalizes the
+actual request. A worker calls `invoke/3` with the normalized value and
+`project/2` returns the portable value delivered to the continuation.
+`MyApp.DocumentClient.fetch/1` accepts the normalized document ID and returns
+`{:ok, document}` or `{:error, reason}`. The projection preserves that tuple.
+The binding and environment arguments carry runtime context for adapters that
+use named resources or need the authenticated subject.
+
+From a Server callback, call
+`call_tool(ctx, {:documents, :read}, %{id: "D12"}, on_result: :loaded)`.
+In `handle_result(:loaded, result, ctx)`, `result` is the value projected by
+the adapter. A local helper such as `kinetic/3` is available when the package
+declares it and the Server uses `tools: MyApp.Stack`. Both paths use the same
+resolved operation binding.
+
+The same `integration/1` can register `service/4` for a behaviour, `flow/3`
+for routes an Agent may expose, and `activity/4` for on-demand background
+work. For a consequential operation, `governed:` connects the tool to a
+registered GAM effect and the application sets its policy.
+[Complete invoice-client example](docs/CUSTOM_STACK_TOOLS.md).
+[Package contracts and options](docs/STACK.md#typed-package-integrations).
 
 ## Satellite libraries
 
@@ -239,7 +381,7 @@ These are application fragments: the effect registration, draft preparation and
 chat consumer are supplied by the host. The consumer displays the exact draft,
 acknowledges rendering and submits the human's separate confirm/reject decision.
 GAM checks that decision before execution. [Managed GAM](docs/MANAGED_GAM.md)
-shows those calls; [the full outreach source](https://github.com/elchemista/spectre/blob/0.4.0/docs/examples/outreach_agent.exs)
+shows those calls. [The website-to-email example](docs/EXAMPLES.md#browse-remember-prepare-email-and-ask-permission-to-save)
 connects website inspection, drafting, refusal and failure handling.
 
 ## Guides
@@ -257,6 +399,7 @@ connects website inspection, drafting, refusal and failure handling.
 | Configure persistence and content storage | [Domain storage](docs/DOMAIN_STORAGE.md), [payload storage](docs/PAYLOAD_STORAGE.md) |
 | Run parallel reusable capabilities | [Skills](docs/SKILLS.md) |
 | Run a complete website-to-email workflow | [Examples](docs/EXAMPLES.md), [LiveView demo](docs/DEMO.md) |
+| Generate an agent or package, inspect routes or run Doctor | [Mix tasks](docs/START_HERE.md#mix-tasks) |
 | Deploy, test or migrate | [Production](docs/PRODUCTION.md), [Testing](docs/TESTING.md), [Migration](docs/MIGRATING_TO_0_4.md) |
 
 The [documentation index](docs/START_HERE.md) links the full 0.4 reference.

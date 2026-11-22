@@ -16,6 +16,12 @@ defmodule Spectre.Effect.Executor do
 
   @type result :: {:ok, term()} | {:error, term()}
 
+  @doc """
+  Executes the effect using the supplied context and adapter options. Return
+  `{:ok, value}` or a plain value for success and `{:error, reason}` for
+  failure. Options include `:effect_id`, `:idempotency_key`,
+  `:effect_owner`, `:effect_scope`, and `:effect_kind`.
+  """
   @callback execute(Effect.t(), Spectre.Context.t(), keyword()) :: result() | term()
 
   @doc "Dispatches one non-action effect through its Agent extension."

@@ -4,9 +4,14 @@ Build an agent that answers “help” and asks for permission to simulate a del
 
 ## 1. Create the example file
 
-In a Mix project with the dependency `{:spectre, "~> 0.4.0"}`, run `mix deps.get`. Create `mail_demo.exs` in the project root. Copy **the four Elixir blocks on this page, in order**, into that file. You only need core and a terminal. In an application each module would normally live in its own file under `lib/`.
+Use a Mix project with Spectre installed. Create `mail_demo.exs` in the project
+root and copy **the four Elixir blocks, in order**, into that file. The example
+uses only core and a terminal. In an application, put each module in its own
+file under `lib/`. [Installation](INSTALLATION.md).
 
-First register what the application can do. Its public operation name is `:send_email`. Once GAM admits the operation, the runtime calls `MailDemo.Effect.execute_effect(:deliver, args, context)`. Here the effect prints one line and returns a simulated receipt so you can see exactly when it runs.
+First register the operation `:send_email`. After GAM admits it, the Runtime
+calls `MailDemo.Effect.execute_effect(:deliver, args, context)`. The example
+reads the body from `args`, prints it and returns a simulated receipt.
 
 ```elixir
 defmodule MailDemo.Effect do
@@ -35,11 +40,24 @@ defmodule MailDemo.Stack do
 end
 ```
 
-The descriptor’s `adapter` and `operation` identify the module and clause to call. `material: :arguments` includes the arguments in the approval material. `:non_idempotent` declares that repeating delivery could duplicate it. Package and adapter authors write this registration. When a package already registers the effect, use its public operation name.
+The operation map key is `:send_email`. The descriptor's `adapter` and
+`operation` select the module and the clause, here `MailDemo.Effect` and
+`:deliver`. `contract: 1` selects the current effect descriptor contract.
+`material: :arguments` makes the prepared arguments the approval material.
+`side_effect: :non_idempotent` declares that repeating the delivery could
+duplicate it. `partition: []` selects no extra identity partition fields,
+`schema_hash: nil` supplies no pinned schema hash, and `config: %{}` supplies
+empty adapter configuration. The Stack installs that package under its
+declared `:mail_demo` ID. [Effect descriptor and scope](STACK_TOOLS.md).
 
 ## 2. Name two routes in the Agent
 
-`flow :mail` groups routes. Each `on` labels a recognizable input. The router matches the text and builds the key it passes to the Server. Here “send” becomes `{:mail, :send}`.
+`stack:` names the installed capabilities and `server:` names the callback
+module. `router(strategies: [:regex])` selects matching by regular expression.
+`flow :mail` groups two routes. Each `on` names an intent and supplies a
+whole-message pattern. The `i` regex flag lets either case match.
+The text “send” becomes `{:mail, :send}`. `protected: true` requires
+confirmation for the governed operation proposed from that route.
 
 ```elixir
 defmodule MailDemo.Agent do
@@ -83,19 +101,42 @@ defmodule MailDemo.Server do
 end
 ```
 
-Read the success clause from left to right. `:sent` identifies the command to resume. `{:governed, details}` is the GAM result. The map pattern requires `details.outcome.status` to be `:succeeded` and accepts additional fields. Rejection arrives with **the same tag** and a different tuple. The last clause preserves default handling for other results, including errors and uncertain outcomes. To rename this continuation, change `on_result:` and the two `:sent` clauses. The route `:send` and operation `:send_email` still work.
+Read the success clause from left to right. `:sent` identifies the command
+to resume. `{:governed, details}` is the GAM result. The map pattern requires
+`details.outcome.status` to be `:succeeded` and accepts additional fields.
+Rejection arrives with **the same tag** and a different tuple. The last
+clause invokes the inherited defaults for other results, including errors
+and uncertain outcomes. The `handle_flow` catch-all similarly keeps the Root
+fallback. To rename the continuation, change `on_result:` and both
+`:sent` clauses.
 
 ## 4. Play the user and observe the outcome
 
-This block is the consumer, the process that would own the chat or UI in an application. It starts the Server with a demo identity and enables the operation. It tries the simple reply, then displays the material GAM asks the user to approve. `presented/2` acknowledges display. After the `:pending` event, send the human choice with `decide/4`. Its second argument, `nil`, selects the root Server.
+This block is the consumer, the process that owns the chat or UI. `agent:`
+selects the declarations, `consumer: self()` sends events to the script, and
+`identity.subject` is the demo's authenticated subject. The
+`gam:` configuration allows the named operation and uses
+`confirm: true` for every invocation of it. Ordinary `input/2` returns an
+interaction ID. The caller compares it with response and pending messages.
+
+The consumer renders the exact material from the presentation event and calls
+`presented(server, ref)` to acknowledge display. It waits for the
+`:pending` event because a newly rendered proposal may still be entering its
+foreground wait. Then `decide(server, nil, ref, choice)` passes the human
+decision. `nil` selects the Root or one of its Activities. A named Skill
+decision supplies that mount ID in the same position. The five-second
+`receive` timeouts belong to the example client.
 
 ```elixir
 alias Spectre.Server
 
-{:ok, server} = Server.start_link(
-  agent: MailDemo.Agent, consumer: self(), identity: %{subject: "demo-user"},
-  gam: [operations: %{send_email: [confirm: true]}]
-)
+{:ok, server} =
+  Server.start_link(
+    agent: MailDemo.Agent,
+    consumer: self(),
+    identity: %{subject: "demo-user"},
+    gam: [operations: %{send_email: [confirm: true]}]
+  )
 
 {:ok, help_id} = Server.input(server, "help")
 receive do
@@ -105,13 +146,14 @@ after
 end
 
 {:ok, send_id} = Server.input(server, "send")
-ref = receive do
-  {Spectre.Server.GAM.Managed, _owner, {:presentation, material}} ->
-    IO.puts(material["rendered_payload"])
-    material["presentation_ref"]
-after
-  5_000 -> raise "No presentation"
-end
+ref =
+  receive do
+    {Spectre.Server.GAM.Managed, _owner, {:presentation, material}} ->
+      IO.puts(material["rendered_payload"])
+      material["presentation_ref"]
+  after
+    5_000 -> raise "No presentation"
+  end
 :ok = Server.presented(server, ref)
 
 receive do
@@ -147,4 +189,8 @@ Run `mix run mail_demo.exs`. You will see `Type send.`, then the request showing
            → respond → consumer
 ```
 
-`use Spectre.Server` provides the implementations of `init/2`, `handle_action/2` and `handle_pending/3` used here. The order of definitions in the file does not schedule events. For timers, Skill events, pending input and asynchronous commands, see [callback order, arguments and return values](SERVER_CALLBACKS.md).
+`use Spectre.Server` provides the implementations of `init/2`,
+`handle_action/2` and `handle_pending/3` used here. Explicit decisions become
+the normalized words `"confermo"` or `"annulla"` inside that pending handler,
+with proof linked to the original presentation. The worker executor runs
+after the GAM Act commits. [Callback order, arguments and return values](SERVER_CALLBACKS.md).

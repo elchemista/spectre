@@ -29,6 +29,16 @@ defmodule Spectre.Server.Store.Disk do
   @magic "SPSS1"
   @default_max_bytes 16 * 1_024 * 1_024
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+
+  @doc """
+  Starts a single local owner using the required `:path` to the snapshot file.
+
+  Set `:name` to register the owner or `:max_bytes` to change its 16 MiB
+  snapshot payload limit. An absent snapshot starts empty. A path with an
+  existing owner or invalid snapshot stops startup with an error.
+  """
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
   end

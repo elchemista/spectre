@@ -1,10 +1,26 @@
 defmodule Spectre.Stack.Tools do
   @moduledoc """
   Immutable tool descriptors returned by `c:Spectre.Stack.Installable.tools/1`.
+  `Spectre.Integration.tool/4` builds the same descriptor for scoped calls.
 
-  A descriptor declares a helper name and a closed set of operations. It does
-  not execute an adapter or grant authority. Cognitive operations declare their
-  retry policy; governed operations name a host binding instead of an executor.
+  A descriptor binds an adapter to a closed set of operations. Cognitive
+  operations declare their retry policy. Governed operations name a host
+  GAM binding.
+
+  ## Tool adapter functions
+
+  - `prepare(operation, input, trusted)` returns `{:ok, args}` or
+    `{:error, reason}`. The trusted map contains the Agent, routing metadata
+    and installation config. Prepare runs during command acquisition, so keep
+    it fast and free of effects. Governed arguments must be a portable map.
+  - `invoke(operation, args, context)` runs in a worker for a cognitive tool.
+    The context contains the installation, its config, the service context
+    and the checkpoint reference when available. Return the raw outcome for
+    projection.
+  - `project(operation, raw)` maps a cognitive result to `{:ok, result}` or
+    `{:error, reason}`. The successful portable value is delivered to the
+    initiating callback. Governed effects are executed after admission by a
+    `Spectre.Server.GAM.EffectAdapter`.
 
   Adapter module availability is checked by the consumer at runtime, allowing
   packages to compile their integration modules independently of the Stack.

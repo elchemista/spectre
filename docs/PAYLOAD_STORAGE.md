@@ -5,8 +5,9 @@ Domain projection rows and Server coordination records. The application chooses
 its storage, encryption, retention and reference format. Spectre keeps portable
 references alongside the facts needed to govern and recover work.
 
-This is opt-in. Without this option, existing inline persistence continues;
-Ledger installation alone does not encrypt or externalize content.
+Configure this option explicitly to externalize new writes. The default
+persists content inline. The same placement choice is available with disk,
+Ledger and custom providers.
 
 ```elixir
 Spectre.Server.start_link(
@@ -24,6 +25,9 @@ Spectre.Server.start_link(
 The same top-level option applies when using `gam: [storage: :ledger]` with
 PostgreSQL. It controls payload placement independently of the canonical GAM
 ledger and Domain projection adapters.
+In this example, `archive:` is an application option passed to both adapter
+callbacks. `allowed_operations` is the host's operation map. The authenticated
+account still supplies identity and the current process receives events.
 
 ![Application-owned payload storage: architecture](assets/payload-storage-1.svg)
 
@@ -57,13 +61,12 @@ adapter. Its `put/2` returns `{:ok, reference}`; its `fetch/2` returns
 `{:ok, original_bytes}`. Either can return `{:error, reason}`. The runtime passes
 encoded bytes so the adapter need not understand Spectre structs or schemas.
 
-The reference can be a string, ID, object key, digest, tuple or plain map. It
-must be portable data; process identifiers and executable values cannot be
-persisted. There is no mandatory digest, signature, immutable-object service or
-encryption algorithm. An S3 adapter, encrypted database adapter or application
-service can implement the same behaviour. The adapter decides what guarantees
-its references provide and must retain the content needed for its recovery
-contract. Choose reference values that do not themselves disclose private data.
+The reference can be a string, object key, digest, tuple or plain map. Use
+portable data. An S3 adapter, encrypted database adapter or application
+service can implement the same behaviour. Choose reference values that can
+resolve the saved version after restart and keep private data out of the
+reference. The adapter chooses its encryption, integrity checks, access
+controls and retention. Spectre checks reference portability.
 
 `context` is a small map describing the boundary. Current integrations use:
 
@@ -104,6 +107,13 @@ belong to Managed GAM and Server coordination.
 The Domain projection stores the resulting records and references, not another
 copy of the external content. Runtime consumers resolve content when needed;
 the canonical history and reference-bearing records remain the recovery facts.
+
+An email, URL, assigns map or observed page stored as application content
+can use this payload adapter. An email or URL used as an identity, policy name,
+tag or object reference remains part of that metadata. Prefer opaque IDs in
+governance metadata and keep sensitive text in the content fields.
+Application logs, browser storage and other package stores have their own
+configuration.
 
 ## Workers, failures and recovery
 

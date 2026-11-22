@@ -75,12 +75,18 @@ defmodule Spectre.Agent do
   declarative: all route and policy data is compiled once, then interpreted by
   the runtime.
 
+  `server:` points to the callback module. `stack:` opts into installed
+  packages. `services:` selects an installation for a behaviour when there
+  are multiple providers. `id:` defaults to this module, and `version:`
+  defaults to `1`.
+
       defmodule MyApp.SupportAgent do
         use Spectre.Agent,
           stack: MyApp.AI,
           server: MyApp.SupportServer
       end
   """
+  @spec __using__(Macro.t()) :: Macro.t()
   defmacro __using__(opts) do
     opts = eval_opts(opts, __CALLER__)
     kind = Keyword.get(opts, :__spectre_kind__, :agent)
@@ -146,11 +152,14 @@ defmodule Spectre.Agent do
 
   `as:` assigns the local scope identifier. `bind:` maps logical Skill action
   requirements to concrete actions owned by the Agent.
+  `governed:` restricts a mounted Server to host-configured operations.
 
       skill MyApp.Skills.Research,
         as: :research,
-        bind: [search: :web_search, publish: :publish_report]
+        bind: [search: :web_search, publish: :publish_report],
+        governed: [:publish_report]
   """
+  @spec skill(Macro.t(), Macro.t()) :: Macro.t()
   defmacro skill(module, opts \\ []) do
     caller = __CALLER__
     module = Macro.expand(module, caller)
@@ -175,6 +184,7 @@ defmodule Spectre.Agent do
 
       inject :company_identity, into: :instructions, position: :start
   """
+  @spec inject(Macro.t(), Macro.t()) :: Macro.t()
   defmacro inject(id, opts \\ []) do
     opts =
       opts
@@ -194,6 +204,7 @@ defmodule Spectre.Agent do
 
       requires_action :search, mode: :read
   """
+  @spec requires_action(Macro.t(), Macro.t()) :: Macro.t()
   defmacro requires_action(name, opts \\ []) do
     name = Macro.expand(name, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -212,6 +223,7 @@ defmodule Spectre.Agent do
   @doc """
   Alias for `requires_action/2` using tool-oriented terminology.
   """
+  @spec requires_tool(Macro.t(), Macro.t()) :: Macro.t()
   defmacro requires_tool(name, opts \\ []) do
     name = Macro.expand(name, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -236,6 +248,7 @@ defmodule Spectre.Agent do
 
       requires_operation :read_logs
   """
+  @spec requires_operation(Macro.t(), Macro.t()) :: Macro.t()
   defmacro requires_operation(name, opts \\ []) do
     name = Macro.expand(name, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -264,6 +277,7 @@ defmodule Spectre.Agent do
         after_action :delete_project, on: :delivered, run: :audit_delete
       end
   """
+  @spec actions(Macro.t(), Macro.t()) :: Macro.t()
   defmacro actions(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
     {block, opts} = Keyword.pop(opts, :do)
@@ -300,6 +314,7 @@ defmodule Spectre.Agent do
   @doc """
   Block-form variant for `actions/2`.
   """
+  @spec actions(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro actions(module, opts, do: block) do
     module = Macro.expand(module, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -335,6 +350,7 @@ defmodule Spectre.Agent do
       action_provider :browser, MyApp.BrowserProvider
       action_provider {:mcp, :github}, MyApp.GitHubProvider
   """
+  @spec action_provider(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro action_provider(id, module, opts \\ []) do
     id = eval_action_arg(id, __CALLER__)
     module = Macro.expand(module, __CALLER__)
@@ -365,6 +381,7 @@ defmodule Spectre.Agent do
         side_effect: :none,
         timeout: 15_000
   """
+  @spec operation(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro operation(id, executor, opts \\ []) do
     id = eval_action_arg(id, __CALLER__)
     executor = eval_action_arg(executor, __CALLER__)
@@ -402,6 +419,7 @@ defmodule Spectre.Agent do
 
       route_operation_events [:completed, :blocked, :observation_significant]
   """
+  @spec route_operation_events(Macro.t()) :: Macro.t()
   defmacro route_operation_events(types \\ :all) do
     types = eval_action_arg(types, __CALLER__)
 
@@ -420,6 +438,7 @@ defmodule Spectre.Agent do
   end
 
   @doc "Configures the canonical checkpoint adapter used by Agent Instances."
+  @spec checkpoint_store(Macro.t(), Macro.t()) :: Macro.t()
   defmacro checkpoint_store(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -440,6 +459,7 @@ defmodule Spectre.Agent do
   `use Spectre.Kinetic`. The explicit form is useful for application-specific
   planners.
   """
+  @spec action_planner(Macro.t(), Macro.t()) :: Macro.t()
   defmacro action_planner(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -467,6 +487,7 @@ defmodule Spectre.Agent do
 
       model MyApp.OpenAIAdapter, with: :complete_chat, model: "gpt-4.1-mini"
   """
+  @spec model(Macro.t(), Macro.t()) :: Macro.t()
   defmacro model(adapter, opts \\ []) do
     adapter = Macro.expand(adapter, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -492,6 +513,7 @@ defmodule Spectre.Agent do
         local: MyApp.LocalClassifier,
         artifact_dir: "priv/spectre/support"
   """
+  @spec classifier(Macro.t(), Macro.t()) :: Macro.t()
   defmacro classifier(adapter, opts \\ [])
 
   defmacro classifier(kind, adapter) when kind in [:local, :llm] do
@@ -514,6 +536,7 @@ defmodule Spectre.Agent do
   end
 
   @doc "Declares a local or LLM classifier independently of the response model."
+  @spec classifier(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro classifier(kind, adapter, opts) when kind in [:local, :llm] do
     named_classifier(kind, adapter, opts, __CALLER__)
   end
@@ -583,6 +606,7 @@ defmodule Spectre.Agent do
   `journal(false)` explicitly disables an application-level default for this
   agent.
   """
+  @spec journal(Macro.t(), Macro.t()) :: Macro.t()
   defmacro journal(store, opts \\ [])
 
   defmacro journal(false, _opts) do
@@ -613,6 +637,7 @@ defmodule Spectre.Agent do
 
       state MyApp.AgentStateStore
   """
+  @spec state(Macro.t()) :: Macro.t()
   defmacro state(module) do
     module = Macro.expand(module, __CALLER__)
 
@@ -630,6 +655,7 @@ defmodule Spectre.Agent do
 
       memory MyApp.AgentMemory
   """
+  @spec memory(Macro.t()) :: Macro.t()
   defmacro memory(module) do
     module = Macro.expand(module, __CALLER__)
 
@@ -649,6 +675,7 @@ defmodule Spectre.Agent do
 
       turn_handler MyApp.ActiveWorkflow, namespace: :support
   """
+  @spec turn_handler(Macro.t(), Macro.t()) :: Macro.t()
   defmacro turn_handler(handler, opts \\ []) do
     handler = Macro.expand(handler, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -666,6 +693,7 @@ defmodule Spectre.Agent do
   end
 
   @doc "Adds an ordered handler before ordinary routing; foreground pending has precedence."
+  @spec pre_route_handler(Macro.t(), Macro.t()) :: Macro.t()
   defmacro pre_route_handler(handler, opts \\ []) do
     quote do
       turn_handler(unquote(handler), unquote(opts))
@@ -673,6 +701,7 @@ defmodule Spectre.Agent do
   end
 
   @doc "Replaces or disables the pre-route handler pipeline."
+  @spec pre_route_handlers(Macro.t()) :: Macro.t()
   defmacro pre_route_handlers(handlers) do
     quote do
       turn_handlers(unquote(handlers))
@@ -689,6 +718,7 @@ defmodule Spectre.Agent do
 
       turn_handlers false
   """
+  @spec turn_handlers(Macro.t()) :: Macro.t()
   defmacro turn_handlers(handlers) do
     handlers = eval_opts(handlers, __CALLER__)
 
@@ -714,6 +744,7 @@ defmodule Spectre.Agent do
         {Spectre.Input.Plugs.NormalizeText, trim?: true}
       ]
   """
+  @spec input_pipeline(Macro.t()) :: Macro.t()
   defmacro input_pipeline(do: block) do
     specs = parse_input_pipeline(block, __CALLER__)
 
@@ -743,6 +774,7 @@ defmodule Spectre.Agent do
 
       shutdown :timer.minutes(30)
   """
+  @spec shutdown(Macro.t()) :: Macro.t()
   defmacro shutdown(timeout) do
     quote bind_quoted: [timeout: timeout] do
       @spectre_config Keyword.put(@spectre_config, :shutdown, timeout)
@@ -754,6 +786,7 @@ defmodule Spectre.Agent do
 
       idle :timer.minutes(5)
   """
+  @spec idle(Macro.t()) :: Macro.t()
   defmacro idle(timeout) do
     quote bind_quoted: [timeout: timeout] do
       @spectre_config Keyword.put(@spectre_config, :idle, timeout)
@@ -773,6 +806,7 @@ defmodule Spectre.Agent do
 
       history 50, summary: {MyApp.Chat, :compact}
   """
+  @spec history(Macro.t(), Macro.t()) :: Macro.t()
   defmacro history(limit, opts \\ []) do
     opts = eval_opts(opts, __CALLER__)
 
@@ -790,6 +824,7 @@ defmodule Spectre.Agent do
 
       fail :agent_failure_reply
   """
+  @spec fail(Macro.t(), Macro.t()) :: Macro.t()
   defmacro fail(prompt, opts \\ []) do
     prompt = Macro.expand(prompt, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -805,6 +840,7 @@ defmodule Spectre.Agent do
 
       approval_pending_reply :approval_pending
   """
+  @spec approval_pending_reply(Macro.t(), Macro.t()) :: Macro.t()
   defmacro approval_pending_reply(prompt, opts \\ []) do
     prompt = Macro.expand(prompt, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -823,6 +859,7 @@ defmodule Spectre.Agent do
 
       router via: [:regex, :semantic_cache, :classifier, :embedding, :llm_classifier]
   """
+  @spec router(Macro.t()) :: Macro.t()
   defmacro router(opts) do
     opts = opts |> eval_opts(__CALLER__) |> normalize_router_options()
 
@@ -839,6 +876,7 @@ defmodule Spectre.Agent do
 
       arbitrator MyApp.Router.Arbitrator, conflict: :llm
   """
+  @spec arbitrator(Macro.t(), Macro.t()) :: Macro.t()
   defmacro arbitrator(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
     opts = opts |> eval_opts(__CALLER__) |> normalize_arbitration_options()
@@ -857,6 +895,7 @@ defmodule Spectre.Agent do
 
       embedding MyApp.Embeddings, model: "text-embedding-3-small"
   """
+  @spec embedding(Macro.t(), Macro.t()) :: Macro.t()
   defmacro embedding(module, opts \\ []) do
     module = Macro.expand(module, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -875,6 +914,7 @@ defmodule Spectre.Agent do
 
   Dataset collection remains opt-in on each route with `collect_intent: true`.
   """
+  @spec intent_dataset(Macro.t(), Macro.t()) :: Macro.t()
   defmacro intent_dataset(adapter, opts \\ []) do
     adapter = Macro.expand(adapter, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -898,6 +938,7 @@ defmodule Spectre.Agent do
 
       protect :delete_account, with: :delete_account_confirmation
   """
+  @spec protect(Macro.t(), Macro.t()) :: Macro.t()
   defmacro protect(action_or_opts, opts \\ []) do
     action_or_opts = eval_action_arg(action_or_opts, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -918,6 +959,7 @@ defmodule Spectre.Agent do
 
       after_action :delete_account, on: :delivered, run: :audit_delete_account
   """
+  @spec after_action(Macro.t(), Macro.t()) :: Macro.t()
   defmacro after_action(action, opts) do
     action = eval_action_arg(action, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -943,6 +985,7 @@ defmodule Spectre.Agent do
   The guard receives `(action, ctx)` — also accepted as arity 1 (`action`) or
   a local agent function via an atom. `:all` matches every action.
   """
+  @spec before_action(Macro.t(), Macro.t()) :: Macro.t()
   defmacro before_action(action, opts) do
     action = eval_action_arg(action, __CALLER__)
     opts = eval_opts(opts, __CALLER__)
@@ -959,29 +1002,26 @@ defmodule Spectre.Agent do
   Flow names are stored on routes and can be used by stateful applications to
   prioritize current-flow rules before general fallback rules.
 
-      flow :project_create do
-        on :wants_project_create,
-          regex: ~r/create.*project/i do
-          ask :project_create
-        end
+      flow :projects do
+        on :create, regex: ~r/create.*project/i
       end
 
+  A Server-bound Agent dispatches this match with the key `{:projects, :create}`.
   Flows nest. A nested flow is a taxonomy grouping: each rule keeps the full
   path in `flow_path` while `flow` stays the innermost name. `inject`
   declarations and flow options are inherited by nested flows.
 
       flow :checkout do
-        on :PAY_CARD, embedding: ["pay by card"] do
-          act :pay_card
-        end
+        on :pay_card, semantic_examples: ["pay by card"]
 
         flow :shipping do
-          on :TRACK_PARCEL, embedding: ["where is my parcel?"] do
-            reason :track_parcel
-          end
+          on :track_parcel, semantic_examples: ["where is my parcel?"]
         end
       end
+
+  The nested route dispatches as `{[:checkout, :shipping], :track_parcel}`.
   """
+  @spec flow(Macro.t(), Macro.t()) :: Macro.t()
   defmacro flow(name, do: block) do
     rules = parse_flow_rules([name], [], block, __CALLER__, [])
 
@@ -998,6 +1038,7 @@ defmodule Spectre.Agent do
   compile pass. Unknown or unconsumed options fail compilation. Nested flows
   inherit the options of their ancestors; their own options win on conflict.
   """
+  @spec flow(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro flow(name, opts, do: block) do
     opts = eval_opts(opts, __CALLER__)
     rules = parse_flow_rules([name], opts, block, __CALLER__, [])
@@ -1015,6 +1056,7 @@ defmodule Spectre.Agent do
   scopes with `expose flows: [{:documents, :search}]` when an installation has
   several. Exposed route labels must be unique within the Agent.
   """
+  @spec expose(Macro.t()) :: Macro.t()
   defmacro expose(declaration) do
     caller = __CALLER__
 
@@ -1038,6 +1080,7 @@ defmodule Spectre.Agent do
         run :cancel_current
       end
   """
+  @spec interrupt(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro interrupt(label, opts, do: block) do
     rule = build_rule(label, [], opts, block, __CALLER__, global?: true)
 
@@ -1049,6 +1092,7 @@ defmodule Spectre.Agent do
   @doc """
   Declares a global route using the compact keyword `do:` form.
   """
+  @spec interrupt(Macro.t(), Macro.t()) :: Macro.t()
   defmacro interrupt(label, opts) when is_list(opts) do
     unless Keyword.keyword?(opts),
       do: raise(ArgumentError, "expected keyword options with do block")
@@ -1080,6 +1124,7 @@ defmodule Spectre.Agent do
         attempts 3, then: :cancel_pending
       end
   """
+  @spec policy(Macro.t(), Macro.t()) :: Macro.t()
   defmacro policy(name, do: block) do
     policy = parse_policy(name, block, __CALLER__)
 
@@ -1096,6 +1141,7 @@ defmodule Spectre.Agent do
         ask :support_answer
       end
   """
+  @spec ask(Macro.t(), Macro.t()) :: Macro.t()
   defmacro ask(prompt, opts \\ []) do
     quote do
       {:__spectre_handler__, :ask, unquote(prompt), unquote(opts)}
@@ -1103,6 +1149,7 @@ defmodule Spectre.Agent do
   end
 
   @doc "Calls the configured model without permitting action planning."
+  @spec reason(Macro.t(), Macro.t()) :: Macro.t()
   defmacro reason(prompt, opts \\ []) do
     quote do
       {:__spectre_handler__, :reason, unquote(prompt), unquote(opts)}
@@ -1110,6 +1157,7 @@ defmodule Spectre.Agent do
   end
 
   @doc "Calls the configured model and permits the closed action planner."
+  @spec act(Macro.t(), Macro.t()) :: Macro.t()
   defmacro act(prompt, opts \\ []) do
     quote do
       {:__spectre_handler__, :act, unquote(prompt), unquote(opts)}
@@ -1126,6 +1174,7 @@ defmodule Spectre.Agent do
         run :prepare_refund_case
       end
   """
+  @spec run(Macro.t(), Macro.t()) :: Macro.t()
   defmacro run(function, opts \\ []) do
     quote do
       {:__spectre_handler__, :run, unquote(function), unquote(opts)}
@@ -1139,6 +1188,7 @@ defmodule Spectre.Agent do
         reply :pong
       end
   """
+  @spec reply(Macro.t(), Macro.t()) :: Macro.t()
   defmacro reply(prompt, opts \\ []) do
     quote do
       {:__spectre_handler__, :reply, unquote(prompt), unquote(opts)}
@@ -1146,6 +1196,7 @@ defmodule Spectre.Agent do
   end
 
   @doc "Starts a separate precise Work owned by the current Agent Instance."
+  @spec work(Macro.t(), Macro.t()) :: Macro.t()
   defmacro work(controller, opts \\ []) do
     quote do
       {:__spectre_handler__, :work, unquote(controller), unquote(opts)}
@@ -1163,6 +1214,7 @@ defmodule Spectre.Agent do
         action :delete_account
       end
   """
+  @spec action(Macro.t(), Macro.t()) :: Macro.t()
   defmacro action(action, opts \\ []) do
     quote do
       {:__spectre_handler__, :action, unquote(action), unquote(opts)}
@@ -1179,12 +1231,15 @@ defmodule Spectre.Agent do
         call_operation :lookup, input: :text
       end
   """
+  @spec call_operation(Macro.t(), Macro.t()) :: Macro.t()
   defmacro call_operation(operation, opts \\ []) do
     quote do
       {:__spectre_handler__, :operation, unquote(operation), unquote(opts)}
     end
   end
 
+  @doc false
+  @spec __before_compile__(Macro.Env.t()) :: Macro.t()
   # DSL callback generation necessarily contains several definition clauses.
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defmacro __before_compile__(env) do

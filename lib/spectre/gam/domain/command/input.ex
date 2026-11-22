@@ -22,7 +22,7 @@ defmodule Spectre.GAM.Domain.Command.Input do
   alias Spectre.GAM.Scope.View, as: ScopeView
 
   @doc false
-  def prepare_observation(state, context, context_refs, external_response? \\ false) do
+  def prepare_observation(state, context, context_refs, external_response?) do
     with {:ok, context} <- observation_context(state, context, external_response?),
          {:ok, _evidence} <- scoped_evidence(state.projection, context.scope_ref, context_refs),
          {:ok, now} <- Transaction.trusted_recorded_at(state) do

@@ -1,4 +1,4 @@
-# Agent and Server in 0.4
+# Agent, Server and Activities in 0.4.1
 
 AgentServer manages GAM automatically. For startup, application callbacks and
 the boundary between application policy and kernel invariants, see
@@ -58,17 +58,6 @@ defmodule MyApp.SupportServer do
   end
 
   @impl true
-  def handle_pending(%{kind: :consent} = pending, input, ctx) do
-    case String.downcase(String.trim(input.text)) do
-      "yes" -> confirm_pending(ctx, pending.id)
-      "no" -> reject_pending(ctx, pending.id)
-      _ -> explain_pending(ctx, pending.id)
-    end
-  end
-
-  def handle_pending(pending, input, ctx), do: super(pending, input, ctx)
-
-  @impl true
   def handle_result(:pricing, {:generated, response}, ctx),
     do: respond(ctx, response.text)
 
@@ -106,15 +95,27 @@ defmodule MyApp.SupportAgent do
 end
 ```
 
-The example assumes the referenced Stack, prompts, model services and registered
-application effect adapters exist. Start the actual owner through `Spectre.Server.start_link/1` or
-`Spectre.summon/1` with the Agent. The callback module is not a second process.
+This example expects a Stack named `MyApp.AI`, an application response model and
+the `:pricing` and `:understand` prompt assets under `priv/support/prompts`.
+Configure an encoder for `:embedding` and a classifier for the corresponding
+router strategies, or select only the configured strategies. `planning: true`
+allows the configured planner to prepare proposals from model output.
+The fallback passes the original input to that prompt. The host must register
+and permit any resulting governed operation. [Configure providers](PROVIDERS.md).
+
+`:pricing` is used as both a prompt name and a chosen result tag in this
+example. `:deleted` receives the outcome of the `:delete_my_account` operation.
+`:understood` uses the default result handler through `super/3`.
+The OTP calls read and update the portable `:price_version` assign.
+Start the associated runtime through `Spectre.Server.start_link/1` or
+`Spectre.summon/1` with the Agent.
 
 ```elixir
 {:ok, server} = Spectre.summon(
   agent: MyApp.SupportAgent,
   subject: account.id,
   identity: %{subject: account.id},
+  consumer: self(),
   assigns: %{},
   gam: [
     storage: {:disk, "var/support/" <> to_string(account.id)},
@@ -122,6 +123,12 @@ application effect adapters exist. Start the actual owner through `Spectre.Serve
   ]
 )
 ```
+
+The example takes `account.id` from application authentication. `subject:`
+selects the registered owner while `identity:` supplies identity data.
+`consumer:` receives chat and lifecycle messages. `storage:` selects the
+data directory for this account's durable coordination and GAM history, and
+`operations:` configures the operation and its `confirm:` policy.
 
 For an Agent with a `server:` binding, repeated or concurrent summons of the
 same Agent and canonical Subject return one supervised local owner.
@@ -155,91 +162,283 @@ assigns. Identity, Agent, input, routing and pending data are views. Returning a
 identity, and returning an old dispatch context is an error. This prevents
 composition mistakes; it is not a sandbox against arbitrary code in the BEAM.
 
-`await_reply(ctx, id, on_result: tag)` registers a **background** actor wait.
-Complete it with `resolve_await(ctx, id, result)`, for example from
-`handle_info/2`. It does not consume the next user message or replace an open
-consent. `await_input(ctx, id, on_result: tag)` explicitly requests a
-**foreground** user answer; the default `handle_pending/3` resolves that wait
-with `{:ok, input}`. Both use a 30,000 ms timeout unless overridden, and accept
-`:infinity`. Only one foreground wait can own the input. `call_actor/4` is the
-worker-based request/reply helper when an ordinary GenServer call is sufficient.
+Use `await_reply(ctx, id, on_result: tag)` to wait for background work. Complete
+it with `resolve_await(ctx, id, result)`, for example from `handle_info/2`.
+Use `await_input` for a human answer. A Flow or Activity can publish a question
+for an exact reply while ordinary chat continues. Both helpers default to 30,000
+ms and accept `:infinity`. [Reply and consent routing](SERVER_CALLBACKS.md#when-each-callback-runs).
 
 ## Run a background Activity
 
-An Activity runs its own callbacks under the AgentServer's supervision. Start
-one from a Server callback when a job needs to continue while the Root handles
-other messages. Both use the Agent's installed tools and Managed GAM Domain.
+An Activity is one supervised execution with its own callbacks, assigns and
+waits. The Root can keep handling input while it runs. Use a Stack-local Activity
+for work defined by your application. An installed package can contribute a
+type such as `{:directive, :mission}`. Start either type from the Root's
+callback or an Activity granted permission to start children.
+
+The following example needs only Spectre. Copy the two Elixir blocks, in order,
+into `activity_demo.exs` in an Elixir project's root and run
+`mix run activity_demo.exs`. The report asks a question while the Root can still
+answer `status`.
 
 ```elixir
-defmodule MyApp.Research do
+defmodule ActivityDemo.Report do
   use Spectre.Activity
 
-  def handle_start(%{id: id}, ctx) do
-    call_tool(ctx, {:documents, :read}, %{id: id}, on_result: :document)
+  @impl true
+  def handle_start(%{title: title}, ctx), do: ask_country(ctx, title)
+
+  @impl true
+  def handle_signal({:revise, title}, ctx), do: ask_country(ctx, title)
+  def handle_signal(signal, ctx), do: super(signal, ctx)
+
+  @impl Spectre.Server
+  def handle_result(:country, {:ok, %Spectre.Input{text: country}}, ctx) do
+    complete(ctx, %{title: ctx.assigns.title, country: country})
   end
 
-  def handle_result(:document, {:ok, doc}, ctx), do: complete(ctx, doc)
-  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+  defp ask_country(ctx, title) do
+    ctx
+    |> assign(:title, title)
+    |> await_input(:report_country,
+      prompt: "Which country should the report cover?",
+      on_result: :country
+    )
+  end
 end
 
-defmodule MyApp.Stack do
+defmodule ActivityDemo.Stack do
   use Spectre.Stack
-
-  install MyApp.Documents
-  activity :research, MyApp.Research, tools: [{:documents, :read}]
+  activity(:report, ActivityDemo.Report, tools: [])
 end
 
-# In the Agent's Server
-def handle_flow({:work, :research}, _input, ctx) do
-  start_activity(ctx, :research, %{id: "D12"}, as: :report)
+defmodule ActivityDemo.Server do
+  use Spectre.Server
+
+  @impl true
+  def handle_flow({:work, :report}, _input, ctx) do
+    start_activity(ctx, :report, %{title: "Quarterly report"}, as: :quarterly)
+  end
+
+  def handle_flow({:work, :status}, _input, ctx), do: respond(ctx, "Chat is available.")
+  def handle_flow(key, input, ctx), do: super(key, input, ctx)
 end
 
-def handle_activity(%{key: :report}, {:completed, doc}, ctx) do
-  respond(ctx, doc.summary)
+defmodule ActivityDemo.Agent do
+  use Spectre.Agent, stack: ActivityDemo.Stack, server: ActivityDemo.Server
+
+  router(strategies: [:regex])
+
+  flow :work do
+    on(:report, regex: ~r/^report$/)
+    on(:status, regex: ~r/^status$/)
+  end
 end
 ```
 
-Use an atom for a local Activity type or `{installation, type}` for an
-installed library type. An unnamed start receives a fresh execution reference.
-A name identifies one active execution at a time. Lifecycle events and
-`handle_activity/3` include the execution `ref` and optional `key` so callers can
-tell two uses of the same name apart. The configured consumer receives
-`{Spectre.Server, root, {:activity, identity, event}}`. The identity includes an
-`event_id` for deduplication. The live coordinator keeps the most recent 256
-unacknowledged events and replays them to a replacement Root. The checkpoint
-records which events the Root has acquired.
+```elixir
+alias Spectre.Server
 
-The consumer and configured submitters can use `Spectre.Server.activities/2`
-and `Spectre.Server.activity/3` to inspect work. `signal_activity/4` and
-`cancel_activity/3` accept a reference or active name and return a request ID.
-The outcome arrives in a `{:signalled, request_id, result}` event. Within a
-callback, use the same helpers with a Context. Add `on_result:` for a tagged
-callback. `if_revision:` lets a caller apply a change to a specific revision.
+{:ok, root} = Server.start_link(agent: ActivityDemo.Agent, consumer: self())
+{:ok, _interaction} = Server.input(root, "report")
 
-An Activity handles signals in `handle_signal/2`. Sending `{:revise, value}`
-advances its revision and retires its open consent. A late decision for that
-presentation returns `{:error, :superseded}`. Effects admitted before the
-revision retain their original identity. The current Activity receives a late
-admitted outcome as `handle_signal({:effect, result}, ctx)`. A governed
-presentation is still acknowledged and decided through the Root. Wait for the
-Activity's `{:pending, presentation_ref}` event after acknowledging the card.
+{ref, id, revision} =
+  receive do
+    {Server, ^root,
+     {:activity, %{ref: ref}, {:waiting_input, %{id: id, revision: revision, prompt: text}}}} ->
+      IO.puts(text)
+      {ref, id, revision}
+  after
+    5_000 -> raise "The report did not ask for a country"
+  end
 
-Declare a `tools:` scope on the Activity and use `requires:` for bindings that
-must be present at startup. At AgentServer startup, `activities:` selects
-allowed types and `activity_tools:` narrows the tool scope. `scope:` narrows a
-particular start further. Starting subactivities requires explicit
-`allow_children:` on the parent's declaration. [Stack integrations](STACK.md)
+{:ok, status_id} = Server.input(root, "status")
 
-The pilot is local to one BEAM node. A supervised Root restart can reattach to
-running Activities while Managed GAM survives, including while those Activities
-have governed work in flight. A failed Activity ends that execution and its
-siblings continue. The Root can receive an admitted effect's outcome even after
-its Activity ends. The checkpoint remains available while a governed command is
-unconfirmed. Storage recovery closes the affected Activities with
-`{:failed, :gam_storage_recovered}` and keeps their recent status available.
-After recovery the Root can start new Activities. If a completion arrives
-after the coordinator advances the revision, it emits
-`{:superseded, revision, {:completed, result}}` and the current revision keeps running.
+receive do
+  {Server, ^root, {:response, ^status_id, text, _metadata}} -> IO.puts(text)
+after
+  5_000 -> raise "The Root did not answer"
+end
+
+{:ok, _answer_id} = Server.input(root, "Italy", activity: ref, pending: {id, revision})
+
+receive do
+  {Server, ^root, {:activity, %{ref: ^ref}, {:completed, result}}} -> IO.inspect(result)
+after
+  5_000 -> raise "The report did not complete"
+end
+
+GenServer.stop(root)
+```
+
+`agent:` selects the compiled Agent and `consumer:` is the process receiving
+the messages. `{:work, :report}` comes from `flow :work` and `on :report`.
+The local Activity type `:report` comes from the Stack registration.
+`%{title: "Quarterly report"}` becomes the first argument to `handle_start/2`.
+`:quarterly` is an optional name for this execution. The wait uses
+`:report_country` as an application-local pending ID and `:country` as its result
+tag. The consumer answers with the separate wait ID and revision received in
+the event. Each five-second `receive` timeout belongs to this example client.
+The question itself has the default 30-second timeout. [Callback arguments and defaults](SERVER_CALLBACKS.md).
+
+### Start options and tool scope
+
+| Setting | Where it goes | Effect |
+| --- | --- | --- |
+| `as: :quarterly` | `start_activity(ctx, type, args, opts)` | Assigns a unique live name within the Root. Each unnamed start receives its own execution reference. A name becomes reusable after an execution ends. |
+| `scope: [{:documents, :read}]` | Start options | Narrows tool access for this execution. `:all` (the default) adds no further restriction. An empty list permits no tools. |
+| `on_result: :report_started` | Start options | Calls `handle_result(:report_started, {:ok, %{ref: ref, key: key}}, ctx)` when the execution is ready. A denied or failed start delivers `{:error, reason}`. Without a tag, the consumer still receives lifecycle events and a rejected command is reported as `{:activity_command_failed, interaction, :start_activity, error}`. |
+| `tools:` and `requires:` | Stack `activity/3` or package `Spectre.Integration.activity/4` | `tools:` narrows the type's scope. `requires:` lists bindings that must exist and remain within the effective scope at startup. Defaults are `:all` and `[]` respectively. |
+| `allow_children:` | Type declaration | `true` permits child starts, or pass a list of allowed types. The default is `false`. Child executions inherit the parent's upper bound and cannot launch another level of children. |
+| `activities:` and `activity_tools:` | `Server.start_link/1` | `activities:` optionally allowlists types for this Root. `activity_tools:` sets the upper bound for tool access (default `:all`). |
+| `max_activities:` | `Server.start_link/1` | Optional non-negative limit on reserved, starting and running executions for this Root, including children. `:infinity` is the default. A full Root rejects new work with `{:error, :activity_limit}`. `0` disables starts for the Root. |
+| `max_steps:` | `Server.start_link/1` or `use Spectre.Activity` | Positive number of conversational callbacks per Activity revision, including `handle_start`, signals and asynchronous results. The default is `32`. Exceeding the budget fails the Activity with `:step_limit`. A new revision gets a fresh budget. |
+| `activity_idle:` | `Server.start_link/1` or `use Spectre.Activity` | `:notify` (default) emits `:idle` once per revision and leaves the Activity available for signals. `:fail` ends it with `:activity_idle`. `:keep` skips idle notifications. |
+
+For step and idle settings, an explicit option on the Root takes precedence over
+the Activity module option. An Activity is idle when its callbacks leave no
+tracked commands, workers or waits and it has no outstanding children. An
+explicit `await_input` or `await_reply` keeps it active while awaiting a response.
+An Activity waiting for an application message through `handle_info/2` can use
+`:keep` or the default notification policy. A parent can handle each direct
+child's `{:completed, value}`, `{:failed, reason}` or `:cancelled` in its
+own `handle_activity/3` while it is running. Child events in that callback use a
+bounded, best-effort queue.
+
+A launch that loses its local supervisor or registry before adoption releases
+its slot and name. A bounded number of these unadopted references can still
+be retried by the original start command. Retrying requires an available slot
+and name.
+
+A custom Activity can declare `use Spectre.Activity, prompt_root: "priv/reports"`
+for its prompt assets. Otherwise, lookup uses the Agent's configured prompt
+root. A `prompt_root:` option on the Root Server applies to the Root's callbacks.
+
+Both the type's declared scope and each launch's scope intersect with the
+Root's configured scope. Activity arguments, signal payloads, terminal values and
+failure reasons must be portable values allowed by the checkpoint format.
+Registering or starting a type does not grant authority for a consequential
+operation. A governed tool runs through the same Root's GAM admission boundary.
+[Stack integrations](STACK.md) · [Managed GAM](MANAGED_GAM.md).
+
+### Inspect, revise or cancel from the host
+
+```elixir
+{:ok, %{ref: ^ref, revision: activity_revision}} = Server.activity(root, :quarterly)
+
+{:ok, request_id} =
+  Server.signal_activity(root, ref, {:revise, "Annual report"},
+    if_revision: activity_revision
+  )
+
+receive do
+  {Server, ^root, {:activity, %{ref: ^ref}, {:signalled, ^request_id, result}}} ->
+    IO.inspect(result)
+after
+  5_000 -> raise "No revision outcome"
+end
+```
+
+Use this host snippet while the report waits for its first answer. To add it
+to the script above, place it before the call that answers `"Italy"`. Read a new
+`:waiting_input` event for this ref after revision and answer with its ID and
+revision. The earlier wait ID is stale.
+`Server.activities(root)` lists owned executions and `Server.activity(root, ref)`
+gets one. The consumer or a PID registered in the Root's `submitters:` can
+inspect and control them. Call `Server.cancel_activity(root, ref)` to request
+cancellation instead. For each control call, `{:ok, request_id}` means accepted
+for handling. The matching `:signalled` event carries the result, usually
+`{:ok, identity}` or `{:error, reason}`. Keep the execution ref if a name may be
+reused. `if_revision:` rejects a command for an older revision with
+`{:error, :superseded}` in the control result. By default the runtime captures
+the current revision when it accepts a control. This revision belongs to the
+execution. Keep the separate revision from the wait event when sending an
+answer. Inside a Server callback, pass
+`ctx` as the first argument and add `on_result:` to receive the result in that
+callback module. A child can control its own children only where its binding
+permits starts. [Lifecycle event shapes](SERVER_CALLBACKS.md#activity-callbacks-and-events).
+
+Use the Context form even when the callback runs in the Root. Passing
+`self()` selects the synchronous host form, which would call the same process.
+Call the qualified host API from an application process that owns the UI
+or transport.
+
+An unknown key or ref produces `{:error, :unknown_activity}`. If a known
+execution has already ended, its control result is `{:error, :inactive_activity}`.
+Malformed host options produce `:invalid_activity_options` or
+`:invalid_activity_revision`. A Root reset produces `:reset_busy`.
+
+A start callback can receive `{:error, :activity_start_outcome_unknown}`
+when its worker deadline elapses. The launch can still complete and emit
+`:started`. A callback signal or cancellation similarly uses
+`:activity_control_outcome_unknown` when its worker stops waiting. Observe
+the lifecycle or query the execution before retrying. Giving a start a
+logical key with `as:` lets you check whether it eventually started.
+
+`{:revise, new_title}` retires the old wait and pending consent, increments the
+revision and calls the Activity's `handle_signal/2`. The example then asks the
+question again. Save the new wait ID and revision. Ordinary application signals
+also reach `handle_signal/2` and keep the revision. The `{:effect, result}` signal
+belongs to the runtime. An already admitted effect retains its original
+identity, and the live Activity can receive the late outcome after revision.
+A completion from the old revision can arrive as
+`{:superseded, old_revision, {:completed, value}}`; the current revision stays
+active.
+
+### Deliver Activity output to the UI
+
+An Activity can call `respond(ctx, "The draft is ready")`. Its Root consumer
+receives the same execution ref used for inspect, signal and cancel.
+
+```elixir
+{Spectre.Server, root,
+ {:activity, %{ref: ref, event_id: event_id},
+  {:output, {:response, interaction_id, text, metadata}}}}
+```
+
+`event_id` lets the consumer deduplicate the notification and `interaction_id`
+can be `nil` for background work. `metadata` contains the response options and
+can include `message_id` for a checkpointed command. Streaming sends `:preview`
+and `:preview_end` in the same `{:output, event}` wrapper. Output goes to the
+consumer directly from the delivery handler. Use `handle_activity/3` for
+lifecycle, or `handle_result/3` inside the Activity to continue its work.
+
+The coordinator sends one event at a time to the Root and waits for its
+acknowledgement before sending the next. Activity output is best effort. An
+output event can be dropped when it exceeds 128 KiB, when 32 notifications are
+already queued at the coordinator or when a local consumer has 256 messages
+waiting. Store important or large results through your application and return
+their reference with `complete/2`. GAM outcomes are available through the
+Domain's reconciliation path.
+
+### Failure, restart and storage recovery
+
+A failed Activity ends that execution while the Root and sibling Activities
+continue. The Root can receive an admitted effect's outcome even after its
+Activity ends. Checkpoints remain available while a governed command is
+unconfirmed. Cancellation closes waits and pending presentations. Admitted
+effects still go through reconciliation.
+
+On one BEAM node, a supervised Root restart can reattach to the existing
+Domain and Activities. If a Root dies while its supervisor stays live, Managed
+GAM waits up to `gam: [shutdown_timeout: ...]` for reattachment (30 seconds by
+default). The live coordinator queues up to 256 events plus one awaiting a
+Root acknowledgement. It delivers retained events to the replacement Root.
+Use `event_id` when displaying activity history. After storage recovery, the Root
+sees affected Activities end with `{:failed, :gam_storage_recovered}` and can
+start fresh work.
+[Checkpoints and reconciliation](#checkpoints-and-reconciliation).
+
+If the coordinator stops while the Root is alive, the consumer receives
+`{:activities_unavailable, :coordinator_stopped}` from the Root. A new start can
+open a new coordinator. A Managed GAM or VM loss also ends the live Activity
+processes. Activity checkpoints preserve recovery evidence and can remain on
+disk for an uncertain governed effect. Restarting the application restores the
+Root and Domain; consult GAM for already-admitted effects and start new work
+explicitly. If the receipt for an earlier start was lost, recovery resumes its
+original command only when the coordinator still knows that command ID.
+Otherwise the continuation receives `{:error, :activity_start_outcome_unknown}`.
+Transient fence failures retry with exponential backoff up to 30 seconds.
 
 ## Reusable flows and targeted answers
 
@@ -248,7 +447,19 @@ Agent makes it visible to its router with `expose :documents`, or selects a
 specific scope with `expose flows: [{:documents, :lookup}]`. The selected flow
 receives its local route label in `handle_flow/3`, named regex captures in
 `ctx.routing[:params]` and its command results in `handle_result/3`.
-Visible route labels are unique within an Agent.
+The Flow macro imports the Context helpers. Use the qualified `Spectre.Server`
+API in the host process for operations such as `input/3` and `reset/2`.
+Visible route labels are unique within an Agent. With `use Spectre.Flow.Port`,
+an unmatched result uses the Server's default handler. In an ordinary Server,
+delegate from the final result clause with `super(tag, result, ctx)` to retain
+those defaults.
+
+This flow expects a tool registered as `{:documents, :read}`. It passes the
+document ID to that adapter and expects the projected value
+`{:ok, %{title: title}}`. String keys in `ctx.routing[:params]` come from named
+regex captures. The flow's own `:read` result tag defaults to the tool's
+operation name. `:document_id` is the explicitly chosen result tag for an
+answer to the question. [Register a package and run the Documents example](EXAMPLES.md#chat-and-reusable-documents-flow).
 
 ```elixir
 defmodule MyApp.Documents.Flow do
@@ -282,8 +493,18 @@ end
 deadline. Use `prompt:` to include the question in the event. An anchored
 `accept:` regex lets the focused wait take a matching message. Other input
 continues to ordinary routing and the wait remains available for a targeted
-reply until its deadline. Free-text questions use targeted replies. Successful
-answers arrive as `{:ok, %Spectre.Input{}}` and timeouts as `{:error, :expired}`.
+reply until its deadline. Choose a narrow regex that matches specific answers,
+such as document IDs. The matcher source and text to match are limited to
+1,024 bytes. Omit the matcher for a free-text question that takes only an
+addressed answer. An Activity can hold such a question alongside its focused
+question, each with a distinct wait reference. Addressed Activity answers go
+straight to their wait without entering the Root's input pipeline, chat history
+or memory. If their delivery times out, the host receives
+`{:error, :activity_input_outcome_unknown}`. Successful answers arrive as
+`{:ok, %Spectre.Input{}}` and
+timeouts as `{:error, :expired}`. Set `timeout:` in milliseconds or to
+`:infinity`. A Root-only `await_input` without a question or matcher uses
+the foreground `handle_pending/3` behavior.
 
 ```elixir
 # Root or Flow wait event
@@ -296,9 +517,11 @@ Spectre.Server.input(root, "D12", pending: {id, revision})
 Spectre.Server.input(root, "Italy", activity: ref, pending: {id, revision})
 ```
 
-The consumer or a configured submitter can answer an Activity wait. Revising
-the Activity retires its earlier wait. Use the verified presentation reference
-and `Spectre.Server.decide/4` for a GAM decision.
+`id` and `revision` come from the wait event. For an Activity also pass its
+`ref` so the Root can find the correct owner. The consumer or a configured
+submitter can answer an Activity wait. Revising the Activity retires its
+earlier wait. Use the verified presentation reference and
+`Spectre.Server.decide/4` for a GAM decision.
 
 ## Where GAM intervenes
 
@@ -457,8 +680,17 @@ pending proofs, seen events, operations and dead letters.
 It cannot turn an old approval into authority for changed code. Restored
 consents remain suspended and require a fresh presentation before confirmation.
 
-Tool descriptors, installation configuration and adapter code participate in
-the fingerprint. After an explicit migration, changed in-flight contracts are
+Tool descriptors, installation configuration, adapter code and exposed Flow
+Port code participate in the fingerprint. Scoped adapters and Flow Ports add at
+most one cached 32-byte digest per checkpoint. The digest records code
+identity without embedding BEAM code, tool arguments or Flow state.
+`checkpoint_version:` defaults to `1`. Increase it when an application
+checkpoint contract changes independently of the compiled Agent.
+If binding code changes during a live OTP upgrade with outstanding work, the
+upgrade returns `:checkpoint_binding_changed`. Drain the work before the
+upgrade or use a cold restart with an explicit migration.
+
+After an explicit migration, changed in-flight contracts are
 marked without rewriting the original command, provenance or execution-start
 fact. Cognitive commands complete as contract-changed or uncertain; a known
 unstarted governed proposal is rejected, while a started one reconciles its

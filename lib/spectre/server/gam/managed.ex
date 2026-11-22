@@ -727,6 +727,12 @@ defmodule Spectre.Server.GAM.Managed do
   def handle_info({:EXIT, pid, reason}, state) do
     cond do
       match?({^pid, _}, state[:activity_owner]) ->
+        send(
+          state.options[:runtime],
+          {Spectre.Server.Runtime, state.options[:runtime_control], :activity_coordinator_down,
+           pid}
+        )
+
         {:noreply, Map.delete(state, :activity_owner)}
 
       pid == state.options[:runtime] and state.host_monitor ->
@@ -966,8 +972,9 @@ defmodule Spectre.Server.GAM.Managed do
 
   defp obtain_activity_owner(state, :start) do
     control = make_ref()
+    limit = Keyword.get(state.options[:options] || [], :max_activities, :infinity)
 
-    case Activities.start_link(managed: self(), activity_control: control) do
+    case Activities.start_link(managed: self(), activity_control: control, max_activities: limit) do
       {:ok, pid} ->
         obtain_activity_owner(Map.put(state, :activity_owner, {pid, control}), :existing)
 

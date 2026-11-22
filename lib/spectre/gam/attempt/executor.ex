@@ -127,6 +127,7 @@ defmodule Spectre.GAM.Attempt.Executor do
   @doc "Returns the immutable contract revision implemented by this adapter."
   @callback contract_ref() :: String.t()
 
+  @doc "Invokes the admitted Act using its Attempt and scoped capability, then reports the observed result."
   @callback execute(Act.t(), Attempt.t(), term(), keyword()) :: result()
 
   defmacro __using__(opts) do

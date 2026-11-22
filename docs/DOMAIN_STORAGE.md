@@ -1,11 +1,12 @@
 # Domain memory and storage recovery
 
-AgentServer defaults to RAM, including its GAM history, coordination state and
-complete projection. No Ledger package or database is required. A configured
+AgentServer defaults to RAM for its GAM history, coordination state and
+complete projection. The built-in `{:disk, path}` adapter provides durable
+local storage. A configured
 `Spectre.Server.Store` can supply durable coordination, canonical history and an
 optional per-record projection through one behaviour. `gam: [storage: :ledger]`
-also discovers an installed Ledger resource. The application owns its database,
-connections and migrations; startup never creates a database.
+can discover a configured Ledger resource. Ledger is optional. The application
+owns the database, connections and migrations for any database-backed adapter.
 
 ![Domain memory and storage recovery: architecture](assets/domain-storage-1.svg)
 
@@ -29,11 +30,11 @@ and diagnostics calls can materialize complete history temporarily. For archive
 pages, use `Projection.Store.page/5` from trusted application code, as shown in
 the Ledger guide and `DemoSpectre.History.records/3`.
 
-The Domain remains the serialized owner of admission and commits. Indexed I/O
-uses the Repo pool and adapter timeouts; a slow database can delay that Domain.
-AgentServer runs governed work in workers, so its ordinary status handling is
-separate. Checkpoint durability barriers still wait for storage. This change
-does not promise latency independent of the database.
+The Domain serializes admission and commits for the Root, Skills and
+Activities that share it. Governed work runs in workers. Indexed I/O uses the
+database pool and adapter timeouts, so a slow database can delay Domain commits
+and ordered checkpoint transitions. Each application process retains its
+own state and active continuations. [Ownership and Activities](ARCHITECTURE.md).
 
 ## Custom storage
 
@@ -55,6 +56,9 @@ shorthand with another `store:` returns `:conflicting_managed_storage`.
 The provider can use a Repo, connection pool or an existing process as its
 reference. The application supervises it once; AgentServer neither starts a
 second provider nor stops a shared provider when an agent closes.
+In the example `consumer: self()` selects the current process for events.
+The portable identity selects the persisted authority and session. `MyApp.Repo`
+is the application-supplied provider reference, not an implicit database driver.
 
 | Callback group | Contract |
 | --- | --- |
@@ -128,6 +132,11 @@ RAM coordination/checkpoint state, and preserves the Agent identity. Old grants,
 consents and governed outbox work cannot authorize this fresh Domain. External
 effects with uncertain results must be reconciled by the application.
 
+When either recovery replaces the Activity coordination generation, the Root
+receives `{:failed, :gam_storage_recovered}` for affected Activity executions.
+Start new work under the recovered Root after processing those notifications.
+Already admitted effects use the original reconciliation path.
+
 The consumer receives
 `{:storage_recovered, %{previous_domain: old, domain: current}}`. There is no
 automatic merge or write-back of divergent RAM history when the database returns.
@@ -140,7 +149,8 @@ continuously from a surviving head; verify after database maintenance.
 The configured consumer can call `Spectre.Server.reset(server)` to clear the
 conversation and application runtime state while retaining the root PID, name,
 identity and configuration. Mounted Skill runtimes restart with fresh local
-state. The root calls `terminate(:reset, context)`, restores the original startup
+state and live Activities close with the old generation. The root calls
+`terminate(:reset, context)`, restores the original startup
 defaults, and runs `init/2` again. Application-owned timers, monitors and handles
 in `Context.private` need cleanup in that termination callback. External memory,
 business data and effects already performed remain application-owned.
@@ -160,6 +170,10 @@ inside the ordinary Server envelope. Storage recovery preserves the existing
 application session; reset deliberately initializes a new one. See
 [the reset and result-delivery example](AGENT_SERVER.md#resetting-an-agent-session)
 for fencing external replies with the session token.
+
+For an application upgrade that keeps the same durable state, use the
+verified checkpoint migrator path instead of reset.
+[Upgrade a durable AgentServer](INSTALLATION.md#upgrading-a-durable-agentserver).
 
 ## Application content
 

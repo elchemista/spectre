@@ -16,6 +16,7 @@ defmodule Spectre.Operation.Ref do
           correlation_id: String.t() | nil
         }
 
+  @doc "Extracts and validates the loop's stable reference, including its subject and correlation ID."
   @spec from_loop(Spectre.Operation.Loop.t()) :: t()
   def from_loop(%Spectre.Operation.Loop{} = loop) do
     ref = %__MODULE__{
@@ -29,6 +30,7 @@ defmodule Spectre.Operation.Ref do
     validate!(ref)
   end
 
+  @doc "Checks the reference's identity, kind, optional controller and correlation ID, and portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = ref) do
     cond do
@@ -52,6 +54,7 @@ defmodule Spectre.Operation.Ref do
     end
   end
 
+  @doc "Returns a valid loop reference or raises `ArgumentError`."
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = ref) do
     case validate(ref) do

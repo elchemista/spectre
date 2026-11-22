@@ -39,12 +39,19 @@ defmodule Spectre.Stack.Installable do
 
   @contract_version 1
 
+  @doc "Returns stable package identity, compatibility and capability declarations."
   @callback manifest() :: Package.t() | map() | keyword()
+
+  @doc "Compiles installation options and an optional quoted DSL block in the caller's environment."
   @callback compile(keyword(), Macro.t() | nil, Macro.Env.t()) ::
               {:ok, map() | keyword()} | {:error, term()}
+  @doc "Returns tool descriptors whose names become generated Server helpers."
   @callback tools(map() | keyword()) :: Tools.t()
+  @doc "Returns effect registrations for the host's managed GAM executor."
   @callback effects(map() | keyword()) :: Effects.t()
+  @doc "Returns service, tool, flow and Activity declarations using `Spectre.Integration`."
   @callback integration(map() | keyword()) :: Integration.t()
+  @doc "Returns logical resource IDs and child specs for the explicitly started Stack runtime."
   @callback child_specs(Installation.t(), keyword()) ::
               [{term(), Supervisor.child_spec()}]
               | {:ok, [{term(), Supervisor.child_spec()}]}
@@ -54,7 +61,11 @@ defmodule Spectre.Stack.Installable do
 
   @doc """
   Defines a static manifest and default data-only compiler.
+
+  The default compiler returns the package options and accepts installations
+  without a block. Override `c:compile/3` for a package-specific DSL.
   """
+  @spec __using__(Macro.t()) :: Macro.t()
   defmacro __using__(manifest_opts) do
     quote bind_quoted: [manifest_opts: manifest_opts] do
       @behaviour Spectre.Stack.Installable

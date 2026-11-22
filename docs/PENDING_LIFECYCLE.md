@@ -7,11 +7,28 @@ Runtime coordinates durable transitions; GAM records the authenticated lifecycle
 observations. The [GAM manifesto](https://spectre.guide/en/governed-act-model)
 explains why a timeout cannot silently extinguish an unresolved Duty.
 
-A pending intention is an unfinished conversation, such as an account deletion
-waiting for confirmation. The Server can suspend it, schedule its closure or
-close it through ordinary Elixir functions. GAM records what the host observed
-about that lifecycle. Closing this conversation does not manufacture a user
-rejection, cancel a committed Act or dispose of a Duty.
+A pending intention is unfinished work, such as a deletion waiting for consent
+or a report waiting for a country. The Runtime correlates each wait with its
+owner and continuation. The Server can suspend an intention, schedule closure
+or close it. GAM can record the lifecycle of a consequential intention while
+the Act and any Duty keep their own lifetimes.
+
+## Select the reply mechanism
+
+| You are waiting for | Server command | What the host sends |
+| --- | --- | --- |
+| A background result from application code | `await_reply(ctx, id, on_result: tag)` | `resolve_await(ctx, id, result)` in a callback, often `handle_info/2`. Ordinary user input continues. |
+| An ordinary user answer in a Flow or Activity | `await_input(ctx, id, prompt: question, on_result: tag)` | `Server.input(root, text, pending: {wait.id, wait.revision})`. Add `activity: execution_ref` when the question belongs to an Activity. |
+| Human approval for a governed operation | `propose(ctx, operation, args, on_result: tag)` or a governed tool | Render the GAM presentation, call `Server.presented(root, presentation_ref)`, then `Server.decide(root, mount, presentation_ref, decision)` when the wait is ready. Use `nil` for the Root or one of its Activities, or the mount name for a Skill. `decision` is `:confirm` or `:reject`. |
+
+`id` is the application-local identifier supplied when creating a wait.
+`wait.id` and `wait.revision` come from the `:waiting_input` event. Save those
+with the question when sending an exact answer. A hosted Activity can use
+`accept:` with a narrow anchored regex to claim matching ordinary input.
+Omit `accept:` to require an addressed answer while the Root handles unrelated
+chat. An expired or revised wait can return `{:error, :stale_pending}` to the host.
+For consent the UI keeps the separate presentation reference from the
+Managed GAM event. [Wait correlation](AGENT_SERVER.md#reusable-flows-and-targeted-answers).
 
 ## Pending intentions inside Skills
 
@@ -73,10 +90,10 @@ defmodule MyApp.SupportServer do
   @impl true
   def handle_pending(%{kind: :consent} = pending, input, ctx) do
     case String.downcase(String.trim(input.text)) do
-      "yes" ->
+      answer when answer in ["yes", "confirm", "confermo", "si", "sì"] ->
         confirm_pending(ctx, pending.id)
 
-      "no" ->
+      answer when answer in ["no", "cancel", "annulla"] ->
         reject_pending(ctx, pending.id)
 
       "how much does it cost?" ->
@@ -128,9 +145,14 @@ defmodule MyApp.SupportAgent do
 end
 ```
 
-The referenced Stack and registered deletion effect must exist. The exact phrases only make
-the example easy to read; the pending handler can use a connected classifier
-to distinguish confirmation, clarification and a new topic.
+The Stack supplies the registered deletion effect.
+`on :delete_account` supplies the route label, `:delete_my_account` is the
+governed operation and `:deleted` correlates the result. `protected: true`
+requires confirmation for a governed proposal made through the deletion
+route. The custom handler handles the ordinary yes/no words, including
+`"confermo"` and `"annulla"` delivered by `Server.decide/4`.
+`policy_ref:` records the application rule and `reason:` records why the
+topic-change branch scheduled closure. [Flow and result arguments](SERVER_CALLBACKS.md).
 
 The returned commands execute in order. The runtime records the scheduled
 closure, then records suspension, then routes the same pricing input. The

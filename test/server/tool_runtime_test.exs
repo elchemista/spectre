@@ -373,6 +373,24 @@ defmodule Spectre.Server.ToolRuntimeTest do
     assert_receive {:completed, :wait, {:ok, [:resource]}}, 2000
   end
 
+  test "a 0.4.0 checkpoint replays its acquired generated helper after explicit migration", c do
+    bytes =
+      __DIR__
+      |> Path.join("../fixtures/compatibility/0.4.0/server-v1.checkpoint.base64")
+      |> File.read!()
+      |> Base.decode64!(ignore: :whitespace)
+
+    assert {:ok, _} = Disk.put_new(c.store, c.key, bytes)
+
+    restored = start_server(c, checkpoint_migrator: {__MODULE__, :migrate})
+    id = "01a2036b-ea94-7024-8a65-97ed94509c42"
+    assert_receive {:invoked, :safe_wait, [:resource], ^id, worker}, 2000
+    send(worker, :release)
+
+    assert_receive {:completed, :wait, {:ok, [:resource]}}, 2000
+    assert Server.status(restored).outbox_size == 0
+  end
+
   test "explicit cancellation records uncertainty for a nonrepeatable tool", c do
     server = start_server(c)
     {:ok, _} = Server.input(server, "hold_never")

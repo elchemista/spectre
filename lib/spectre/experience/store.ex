@@ -25,12 +25,23 @@ defmodule Spectre.Experience.Store do
           required(:digest) => String.t()
         }
 
+  @doc "Returns a stable, portable identity for the configured evidence store."
   @callback identity(keyword()) :: term()
+
+  @doc "Declares persistence across process or application restart."
   @callback durability(keyword()) :: durability()
+
+  @doc "Reads the encoded evidence artifact at a content-addressed key."
   @callback get(String.t(), keyword()) :: :not_found | {:ok, binary()} | {:error, term()}
+
+  @doc "Stores immutable evidence bytes under their key. The same key and bytes are idempotent."
   @callback put(String.t(), binary(), keyword()) ::
               :ok | {:ok, :created | :existing} | {:error, term()}
+
+  @doc "Returns stored pairs of evidence keys and encoded artifacts for the configured store."
   @callback list(keyword()) :: {:ok, [{String.t(), binary()}]} | {:error, term()}
+
+  @doc "Deletes the evidence artifact for a key, or returns `:not_found`."
   @callback delete(String.t(), keyword()) :: :ok | :not_found | {:error, term()}
 
   @doc "Normalizes an Experience Store configuration."

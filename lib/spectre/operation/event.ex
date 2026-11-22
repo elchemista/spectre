@@ -48,6 +48,14 @@ defmodule Spectre.Operation.Event do
           metadata: map()
         }
 
+  @doc """
+  Builds an event envelope from a loop, an event type, and a required
+  `:agent_id` option. Omitting that option raises `KeyError`. Revision,
+  correlation ID, and provenance default to the loop's values. Optional
+  fields include `:id`, `:causation_id`, `:timestamp` (in milliseconds),
+  `:payload`, `:artifact`, and `:metadata`. Call `validate/1` to check the
+  envelope before it is committed.
+  """
   @spec new(Spectre.Operation.Loop.t(), atom(), keyword()) :: t()
   def new(%Spectre.Operation.Loop{} = loop, type, opts \\ [])
       when is_atom(type) and not is_nil(type) do
@@ -68,6 +76,7 @@ defmodule Spectre.Operation.Event do
     }
   end
 
+  @doc "Checks an event's identity, loop kind and revision, event type, timestamp, and portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = event) do
     cond do

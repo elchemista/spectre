@@ -2,8 +2,9 @@
 
 This file is the normative public API manifest for Spectre `0.4.1`. It retains
 the recoverable conversational, operational, inference, streaming, receipt,
-and determinism surfaces and adds the native Router Adapter behaviour,
-privacy-scoped request structs, and executable Adapter conformance.
+and determinism surfaces. This version includes typed Stack integrations,
+reusable Flow Ports and the on-demand Activity API. It also provides the native
+Router Adapter behaviour, scoped requests and executable adapter conformance.
 The Agent/Server API and the imported `Spectre.GAM` boundary are listed below
 alongside the retained compatibility API. See [Agent and Server](AGENT_SERVER.md)
 for ownership and migration requirements.

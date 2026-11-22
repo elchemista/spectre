@@ -15,15 +15,17 @@ The implemented contracts are described in [Architecture](ARCHITECTURE.md),
 [Managed GAM](MANAGED_GAM.md) and [Migration](MIGRATING_TO_0_4.md).
 [Release checks](RELEASE_0_4.md) describes how to verify a candidate.
 
-## Planned 0.4.1 work
+## Spectre 0.4.1
 
-The [0.4.1 implementation plan](https://github.com/elchemista/spectre/blob/0.4.1/docs/PLAN_0_4_1.md) proposes typed integration
-ports for Stack-installed libraries, scoped conversational flows and an
-operational API for tools and on-demand Activities. Applications start and
-control work by logical name. Spectre owns OTP supervision and recovery.
-The plan puts the OTP, Managed GAM rebind and revision/admission spikes
-before the Integration API freeze. It covers package compatibility and the
-Prism, Documents and Directive pilots.
+Stack packages can declare typed services, tools, reusable flows and Activity
+types. Agents decide which flows to expose. A Server can keep serving chat while
+one or more Activities run under its supervision. Use the execution reference
+to observe and control each one. [Stack integrations](STACK.md#typed-package-integrations),
+[Activity lifecycle](AGENT_SERVER.md#run-a-background-activity).
+
+Existing package hooks still cover shared resources, diagnostics and external
+ingress. Prism, Documents and Directive illustrate service selection, exposed
+flows and on-demand OTP work. [Examples](EXAMPLES.md).
 
 ## Compatibility and future changes
 
