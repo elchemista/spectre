@@ -15,7 +15,10 @@ defmodule Spectre.Server.OutcomeDispatcher.Adapter do
   Neither a binding nor an event id authenticates an Outcome by itself.
   """
 
+  @doc "Recovers a result and its revision from a stored binding, or returns `:pending`."
   @callback recover(map(), String.t() | nil, keyword()) ::
               {:ok, String.t(), term()} | :pending | {:error, term()}
+
+  @doc "Delivers the result for an event ID and acknowledges durable receiver acquisition."
   @callback deliver(map(), String.t(), term(), keyword()) :: :ok | {:error, term()}
 end

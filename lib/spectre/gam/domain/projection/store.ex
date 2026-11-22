@@ -23,18 +23,28 @@ defmodule Spectre.GAM.Domain.Projection.Store do
   @type key :: {atom(), term()}
   @type change :: {:put, key(), term()} | {:delete, key()}
   @type handle :: %{domain: String.t(), generation: String.t()}
+  @type head :: %{handle: handle(), cursor: cursor()}
+  @type page :: {:ok, [{key(), binary()}], term() | nil} | {:error, term()}
 
+  @doc "Opens a fresh projection generation for a Domain and fences its earlier generation."
   @callback open(String.t(), keyword()) :: {:ok, handle()} | {:error, term()}
-  @callback head(String.t(), keyword()) ::
-              {:ok, %{handle: handle(), cursor: cursor()}} | :not_found | {:error, term()}
+
+  @doc "Reads the active generation and its committed cursor, or returns `:not_found`."
+  @callback head(String.t(), keyword()) :: {:ok, head()} | :not_found | {:error, term()}
+
+  @doc "Applies all changes atomically at the expected generation and cursor, then advances the cursor."
   @callback commit(handle(), cursor(), cursor(), Enumerable.t(), keyword()) ::
               :ok | {:error, term()}
+
+  @doc "Reads the canonical bytes of existing keys at one exact generation and cursor."
   @callback fetch(handle(), cursor(), [key()], keyword()) ::
               {:ok, %{optional(key()) => binary()}} | {:error, term()}
-  @callback page(handle(), cursor(), atom(), keyword()) ::
-              {:ok, [{key(), binary()}], term() | nil} | {:error, term()}
-  @callback select(handle(), cursor(), atom(), keyword(), keyword()) ::
-              {:ok, [{key(), binary()}], term() | nil} | {:error, term()}
+
+  @doc "Reads a count- and byte-bounded page of one collection at an exact cursor."
+  @callback page(handle(), cursor(), atom(), keyword()) :: page()
+
+  @doc "Reads an indexed selection using query options followed by the original adapter options."
+  @callback select(handle(), cursor(), atom(), keyword(), keyword()) :: page()
 
   @doc false
   def normalize(nil), do: {:ok, nil}
@@ -51,14 +61,31 @@ defmodule Spectre.GAM.Domain.Projection.Store do
 
   def normalize(_), do: {:error, :invalid_domain_projection_store}
 
+  @doc "Creates a fresh generation through the configured projection adapter."
+  @spec open(config(), String.t()) :: {:ok, handle()} | {:error, term()}
   def open(config, domain), do: invoke(config, :open, [domain])
+
+  @doc "Reads the projection head for a Domain through its configured adapter."
+  @spec head(config(), String.t()) :: {:ok, head()} | :not_found | {:error, term()}
   def head(config, domain), do: invoke(config, :head, [domain])
 
+  @doc "Commits row changes from the supplied predecessor cursor to the new cursor."
+  @spec commit(config(), handle(), cursor(), cursor(), Enumerable.t()) :: :ok | {:error, term()}
   def commit(config, handle, before, after_cursor, changes),
     do: invoke(config, :commit, [handle, before, after_cursor, changes])
 
+  @doc "Fetches selected rows as canonical bytes at the requested projection cursor."
+  @spec fetch(config(), handle(), cursor(), [key()]) ::
+          {:ok, %{optional(key()) => binary()}} | {:error, term()}
   def fetch(config, handle, cursor, keys), do: invoke(config, :fetch, [handle, cursor, keys])
 
+  @doc """
+  Pages over a collection using `:limit`, `:max_bytes` and an opaque `:after` cursor.
+
+  `:group`, `:from`, `:through` and `:nearest` select indexed queries via the
+  adapter's `c:select/5` callback. A `nil` cursor in the reply marks the last page.
+  """
+  @spec page(config(), handle(), cursor(), atom(), keyword()) :: page()
   def page(config, handle, cursor, collection, page_opts \\ [])
 
   def page({module, opts}, handle, cursor, collection, page_opts) when is_list(page_opts) do

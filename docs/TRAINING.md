@@ -1,9 +1,8 @@
 # Intent examples, semantic lookup and training
 
-0.4 retains example collection, review, semantic lookup and classifier training.
-The clearer application-facing name is **IntentDataset**: it stores labeled
-examples, not cached model answers. Not every useful example already has a
-vector; only rows with valid compatible embeddings enter the semantic index.
+`Spectre.IntentDataset` stores labeled examples for recognition. A reviewed
+text example can support exact matching. A compatible vector lets that example
+participate in semantic lookup. A local classifier has a separate training step.
 
 | Operation | What changes |
 | --- | --- |
@@ -18,7 +17,7 @@ vector; only rows with valid compatible embeddings enter the semantic index.
 
 ```elixir
 defmodule MyApp.SupportAgent do
-  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+  use Spectre.Agent, server: MyApp.SupportServer
 
   embedding MyApp.Embeddings
   classifier :local, MyApp.LocalClassifier, artifact_dir: "priv/intents"
@@ -38,14 +37,17 @@ defmodule MyApp.SupportAgent do
 end
 ```
 
-The referenced embedding/classifier adapters and Server must be supplied by the
-host. This example uses the built-in dataset without a custom adapter binding.
-Do not bind `Spectre.Router.SemanticCache` as its own adapter: it is the dispatcher,
-so that configuration would recurse instead of reaching the built-in store.
-`collect_intent:` replaces the unclear `learn:` spelling in new declarations.
-It enables eligible runtime collection under the configured collection policy;
-it does not mean every matched input is automatically promoted to ground truth.
-`train:`, `training:` and inline training DSL forms are not supported.
+Provide the Server, encoder and classifier modules. The built-in dataset needs
+no separate Stack installation. If you bind a custom store, supply that
+store's adapter to `intent_dataset`.
+
+`semantic_examples:` gives the router known phrases for a route.
+`collect_intent: true` enables runtime collection under the configured
+collection policy. The flow default reaches `:pricing`, while
+`collect_intent: false` opts `:delete_account` out. `dataset_lookup: false`
+also excludes that route from dataset lookup. `protected: true` requests
+confirmation for proposals made through that route. Training remains an
+explicit offline operation. [Recognition strategy options](ROUTING.md).
 
 ## Review runtime examples
 
@@ -58,6 +60,11 @@ it does not mean every matched input is automatically promoted to ground truth.
 {:ok, examples} = Spectre.IntentDataset.examples(MyApp.SupportAgent)
 {:ok, verified} = Spectre.IntentDataset.verify(MyApp.SupportAgent, row.id)
 ```
+
+The first argument to `put/3` is the example text. The result map names the
+declared label and origin strategy. `agent:` identifies the owning Agent.
+`row.id` identifies the exact example to review. Marking it verified makes it
+eligible for lookup under the route and store policy.
 
 Use `update_example`, `relabel`, `delete`, `snapshot` and `load_snapshot` to manage
 examples explicitly. Online rows remain unverified by default. Review APIs can
@@ -77,12 +84,17 @@ mix spectre.intent_dataset.export MyApp.SupportAgent examples.jsonl
 mix spectre.intent_dataset.embed MyApp.SupportAgent examples.jsonl vectors.jsonl
 ```
 
-Export includes verified rows by default; `--include-unverified` is explicit.
-The embedding command uses the encoder already configured by the Agent/Stack.
-It validates labels and profiles, reuses compatible saved vectors and embeds
-only rows missing them. It neither chooses a remote model nor trains a classifier.
-The output replaces its target only after the whole batch succeeds; incompatible
-or unidentified stored vectors fail instead of being silently reassigned.
+The export command takes the Agent module and target JSONL path. By default,
+it includes verified rows from the online dataset. `--include-unverified`
+includes rows waiting for review. `--source all` also includes static
+sources, and `--source online` selects only the online rows. Existing vectors
+and profile metadata are preserved.
+
+The embed command takes the Agent module, source and output paths. It uses the
+encoder already configured by the Agent or Stack. The task validates labels
+and profiles, reuses compatible saved vectors, and embeds rows missing a vector.
+It replaces the target after the whole batch succeeds. Incompatible or
+unidentified stored vectors fail validation.
 
 Labeled sources can use JSON arrays or JSONL records with `text` and `label`
 (or the retained `intent` field). Labels must correspond to the Agent's declared
@@ -109,12 +121,17 @@ mix spectre.classifier.download_model --model intfloat/multilingual-e5-small
 mix spectre.classifier.train training/support/dataset.json priv/spectre/support
 ```
 
-Model download/training requires the appropriate host embedding dependencies.
-The trainer writes local classifier artifacts and a `semantic_cache.jsonl`
-companion containing training rows and their saved vectors. That retained
-filename is an artifact format, not a reason to call all text examples a cache.
-Runtime filtering respects route eligibility and reuses vectors rather than
-embedding every dataset row on load.
+| Task | Arguments and switches |
+| --- | --- |
+| `spectre.classifier.dataset` | Agent module, output path and optional repeated `--source` labeled files. `--pretty` controls JSON formatting. The default output is `training/dataset.json`. |
+| `spectre.classifier.download_model` | Optional `--model` chooses the encoder model ID. Otherwise the task uses the configured classifier encoder. |
+| `spectre.classifier.train` | Dataset path and output directory. Override the encoder with `--model`. `--accept-threshold` sets the minimum top score, `--margin-threshold` sets its gap over the second score, and `--high-confidence-threshold` lets a sufficiently strong score pass the classifier's margin rule. |
+
+With the ExFastembed encoder, add the optional `:ex_fastembed` dependency to
+your application before downloading or training. The trainer writes
+classifier artifacts and a `semantic_cache.jsonl` companion containing the
+training rows and saved vectors. Runtime filtering respects route eligibility
+and reuses compatible vectors on load.
 
 ```elixir
 config :spectre, :classifier,
@@ -122,6 +139,13 @@ config :spectre, :classifier,
   encoder_model: "intfloat/multilingual-e5-small",
   embedding_adapter: Spectre.Classifier.Embeddings.ExFastembed
 ```
+
+For the built-in adapter, declare
+`classifier :local, Spectre.Classifier, artifact_dir: "priv/spectre/support"`
+and add `:local_classifier` to the Agent's router strategies. The
+`artifact_dir:` value points to the trainer's output, and the encoder
+configuration must match the artifacts. The router's arbitration thresholds
+can impose additional acceptance conditions. [Arbitration](ROUTING.md#visibility-thresholds-and-arbitration).
 
 Classifier centroid/example indexes and semantic row lookup are distinct.
 Vettore provides the indexes; quantized candidate search may use Hamming distance

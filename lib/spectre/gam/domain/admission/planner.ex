@@ -10,6 +10,7 @@ defmodule Spectre.GAM.Domain.Admission.Planner do
 
   alias Spectre.GAM.{Candidate, Governance}
   alias Spectre.GAM.Domain.{Context, Projection}
+  alias Spectre.GAM.Domain.Admission.Fence
   alias Spectre.GAM.Domain.Sequencer.State
   alias Spectre.GAM.Execution.Router
   alias Spectre.GAM.GovernedAct.Class, as: GovernedClass
@@ -74,8 +75,8 @@ defmodule Spectre.GAM.Domain.Admission.Planner do
         {:error, {:candidate_identity_conflict, candidate.identity_key}}
 
       :not_found ->
-        with :ok <-
-               Router.validate_candidate(state.execution_boundary, projection, candidate) do
+        with :ok <- Fence.validate(state, request),
+             :ok <- Router.validate_candidate(state.execution_boundary, projection, candidate) do
           evaluate_submission(request, candidate, context, projection, admitted_at)
         end
 

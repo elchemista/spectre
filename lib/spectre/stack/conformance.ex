@@ -14,7 +14,6 @@ defmodule Spectre.Stack.Conformance do
   alias Spectre.Stack.Contract.V2
   alias Spectre.Stack.Definition
   alias Spectre.Stack.Installation
-  alias Spectre.Stack.Installable
   alias Spectre.Stack.Package
   alias Spectre.Stack.Value
 
@@ -32,7 +31,7 @@ defmodule Spectre.Stack.Conformance do
   Entries may be installable modules or `{module, manifest}` pairs. The latter
   form is useful for fixtures and generated package manifests. Optional
   `:configs` is a map keyed by package id and must contain compiled, portable
-  configuration. Module entries also validate their optional `tools/1`
+  configuration. Module entries also validate tool and integration
   declarations with that configuration. Raw manifest pairs remain data-only
   checks and do not invoke package callbacks.
   """
@@ -43,8 +42,8 @@ defmodule Spectre.Stack.Conformance do
     with :ok <- validate_options(opts),
          :ok <- require_entries(entries),
          {:ok, packages} <- normalize_entries(entries) do
-      tool_modules = entries |> Enum.filter(&is_atom/1) |> MapSet.new()
-      compile_matrix(packages, opts, tool_modules)
+      installables = entries |> Enum.filter(&is_atom/1) |> MapSet.new()
+      compile_matrix(packages, opts, installables)
     end
   end
 
@@ -52,19 +51,18 @@ defmodule Spectre.Stack.Conformance do
     do: {:error, {:invalid_stack_conformance_matrix, shape(entries), shape(opts)}}
 
   @spec compile_matrix([Package.t()], keyword(), MapSet.t()) :: {:ok, map()} | {:error, term()}
-  defp compile_matrix(packages, opts, tool_modules) do
+  defp compile_matrix(packages, opts, installables) do
     configs = Keyword.get(opts, :configs, %{})
 
     installations =
       Enum.map(packages, fn package ->
         config = Map.get(configs, package.id, %{})
 
-        tools =
-          if MapSet.member?(tool_modules, package.module),
-            do: Installable.tools!(package.module, config),
+        adapters =
+          if MapSet.member?(installables, package.module),
+            do: Installation.tool_adapters!(package.module, config),
             else: %{}
 
-        adapters = if map_size(tools) == 0, do: %{}, else: %{tools: tools}
         Installation.build!(package.id, package, config, adapters, false)
       end)
 

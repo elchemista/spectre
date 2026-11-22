@@ -35,23 +35,43 @@ defmodule Spectre.Extension do
 
   @api_version 1
 
+  @doc "Returns the stable extension ID used to detect duplicates and fetch its mount."
   @callback id() :: term()
+
+  @doc "Returns the supported extension API version. Omitting this callback selects version 0."
   @callback api_version() :: pos_integer()
+
+  @doc "Registers namespaced compile-time attributes on the Agent module with the mount options."
   @callback setup(module(), keyword()) :: :ok
+
+  @doc "Compiles the Agent module's extension declarations and mount options into package data."
   @callback compile(module(), keyword()) :: term() | {:ok, term()} | {:error, term()}
+
+  @doc "Returns registered action providers for this extension configuration."
   @callback action_providers(term()) ::
               [ProviderMount.t() | {term(), module()} | {term(), module(), keyword()}]
+
+  @doc "Returns the action planner module and optional configuration, or `nil`."
   @callback action_planner(term()) :: {module(), keyword()} | module() | nil
+
+  @doc "Returns executor modules with the non-action effect kinds they handle."
   @callback effect_executors(term()) ::
               [
                 ExecutorMount.t()
                 | {atom(), module()}
                 | {atom(), module(), keyword()}
               ]
+  @doc "Consumes the extension's flow options and returns constraints with the remaining options."
   @callback flow_constraints(keyword(), term()) ::
               {[Spectre.Flow.Constraint.t()], keyword()} | {:error, term()}
+
+  @doc "Returns the inference selector module and optional configuration, or `nil`."
   @callback inference_selector(term()) :: {module(), keyword()} | module() | nil
+
+  @doc "Returns infrastructure defaults to merge into the Agent's explicit configuration."
   @callback agent_config(term()) :: keyword()
+
+  @doc "Translates a package handler form using the caller environment and mount options."
   @callback expand_handler(Macro.t(), Macro.Env.t(), keyword()) ::
               {:ok, Macro.t()} | :ignore | {:error, term()}
 
@@ -239,18 +259,10 @@ defmodule Spectre.Extension do
   """
   @spec inference_selector(module()) :: {module(), keyword()} | nil
   def inference_selector(agent) when is_atom(agent) do
-    selectors =
-      agent
-      |> Spectre.Definition.fetch!()
-      |> Map.fetch!(:extensions)
-      |> Enum.map(&inference_selector/1)
-      |> Enum.reject(&is_nil/1)
+    definition = Spectre.Definition.fetch!(agent)
 
-    case selectors do
-      [] -> nil
-      [selector] -> selector
-      many -> raise ArgumentError, "multiple inference selectors configured: #{inspect(many)}"
-    end
+    Spectre.Stack.Binding.selected_service(definition, Spectre.Inference.Selector) ||
+      legacy_inference_selector(definition.extensions)
   end
 
   @doc false
@@ -263,6 +275,19 @@ defmodule Spectre.Extension do
       normalize_planner!(module.inference_selector(extension_config(mount)))
     else
       nil
+    end
+  end
+
+  defp legacy_inference_selector(extensions) do
+    selectors =
+      extensions
+      |> Enum.map(&inference_selector/1)
+      |> Enum.reject(&is_nil/1)
+
+    case selectors do
+      [] -> nil
+      [selector] -> selector
+      many -> raise ArgumentError, "multiple inference selectors configured: #{inspect(many)}"
     end
   end
 

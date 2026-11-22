@@ -15,6 +15,10 @@ mix spectre.routes MyApp.SupportAgent --json
 Doctor checks the required callbacks of the declared root and mounted Skill
 Servers without starting them or invoking their callbacks. The routing JSON names
 each Skill's bound Server, falling back to the root when the Skill inherits it.
+The `stack.compatibility` check validates the compiled Stack, including typed
+bindings and required Activity tools. Its `integration_bindings` counts cover
+typed services and flows, resolvable tools from either declaration style,
+and installed and local Activity types.
 These checks inspect compiled contracts; live GAM state and backend availability
 use the authorized runtime inspector below and application integration tests.
 
@@ -25,6 +29,7 @@ Call these APIs from the process configured as the root Server's `consumer:`:
 ```elixir
 :ok = Spectre.Server.subscribe(server)
 {:ok, root} = Spectre.Server.inspect(server, limit: 50)
+{:ok, activities} = Spectre.Server.activities(server)
 {:ok, research} = Spectre.Server.inspect(server, skill: :research, limit: 50)
 {:ok, page} = Spectre.Server.gam_inspect(server, limit: 50)
 {:ok, trace} = Spectre.Server.trace(server, interaction_id, skill: :research)
@@ -32,6 +37,14 @@ Call these APIs from the process configured as the root Server's `consumer:`:
 # Read additional records from the same revision.
 {:ok, next} = Spectre.Server.gam_inspect(server, cursor: page.next_cursor)
 ```
+
+Activity entries identify the type, execution reference, optional name, revision
+and status. Use `Spectre.Server.activity(server, ref)` for one execution. The
+consumer also receives lifecycle events as work starts, completes, fails or
+is cancelled. Read the current revision before a guarded signal. Check the
+`{:signalled, request_id, outcome}` event to distinguish queued control from
+the applied result. Keep the execution ref in the UI when a named key can be
+reused. [Activity lifecycle](AGENT_SERVER.md#run-a-background-activity).
 
 Read the next page only when `next_cursor` is non-nil. A cursor belongs to one
 Scope, revision and interaction filter. `{:error, :stale_cursor}` means the

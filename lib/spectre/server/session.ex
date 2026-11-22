@@ -113,6 +113,11 @@ defmodule Spectre.Server.Session do
   def activate(_), do: {:error, :invalid_server_session}
 
   @doc false
+  @spec activation_recorded?(t(), binary()) :: boolean()
+  def activation_recorded?(%__MODULE__{pointer: pointer}, generation) when is_binary(generation),
+    do: match?({:ok, ^generation, _}, read_pointer(pointer))
+
+  @doc false
   @spec runtime_options(t(), keyword()) :: keyword()
   def runtime_options(%__MODULE__{mode: :memory}, opts),
     do: Keyword.drop(opts, [:checkpoint, :checkpoint_domain, :payload_store])

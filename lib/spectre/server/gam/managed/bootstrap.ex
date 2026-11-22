@@ -81,6 +81,8 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
   end
 
   defp open_host(host, opts, owner) do
+    host = Map.put(host, :activity_fence_token, make_ref())
+
     with {:ok, host} <- start_resource(host, :gate, fn -> gate(opts, owner, host) end),
          {:ok, host} <-
            start_resource(host, :domain, fn -> domain(host, host.gate, owner, opts) end),
@@ -643,6 +645,8 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
       domain_ref: host.refs.domain,
       store: host.store,
       projection_store: Map.get(host, :projection_store),
+      activity_fence:
+        {host.activity_fence_token, Spectre.Server.Store.Port.adapter(host.journal)},
       recovery_policy:
         {Managed.Recovery,
          owner: owner,

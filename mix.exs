@@ -1,9 +1,18 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.4.0"
+  @version "0.4.1"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.elchemista.com"
+  @example_files ~w(
+    docs/examples/agent_server_quickstart.exs
+    docs/examples/outreach_agent.exs
+    docs/examples/external_approval.exs
+    docs/examples/routing-eval.jsonl
+    docs/examples/core_agents/run.exs
+    docs/examples/core_agents/core_agents.exs
+    docs/examples/core_agents/prompts/chat.text.heex
+  )
   @docs_extras [
     "README.md",
     "docs/START_HERE.md",
@@ -99,8 +108,7 @@ defmodule Spectre.MixProject do
       name: "spectre",
       maintainers: ["elchemista"],
       files:
-        ~w(lib/**/*.ex priv docs/assets mix.exs .formatter.exs docs/examples/routing-eval.jsonl docs/examples/agent_server_quickstart.exs docs/examples/outreach_agent.exs docs/examples/external_approval.exs) ++
-          @docs_extras,
+        ~w(lib/**/*.ex priv docs/assets mix.exs .formatter.exs) ++ @example_files ++ @docs_extras,
       licenses: ["Apache-2.0"],
       links: %{
         "Website" => @homepage_url,
@@ -158,7 +166,11 @@ defmodule Spectre.MixProject do
   defp docs do
     [
       # README and guide image paths retain their GitHub-relative layout.
-      assets: %{"docs/assets" => "docs/assets", "./docs/assets" => "assets"},
+      assets: %{
+        "docs/assets" => "docs/assets",
+        "./docs/assets" => "assets",
+        "docs/examples/core_agents" => "examples/core_agents"
+      },
       main: "start_here",
       source_ref: @version,
       extras: @docs_extras,

@@ -6,6 +6,7 @@ defmodule Spectre.Event.SchemaRegistry do
 
   @type config :: module() | {module(), keyword()} | nil
 
+  @doc "Checks that the Event envelope's payload schema is compatible with the given Definition."
   @callback compatible?(Ref.t(), Envelope.t(), keyword()) :: :ok | {:error, term()}
 
   @spec verify(config(), Ref.t(), Envelope.t()) :: :ok | {:error, term()}

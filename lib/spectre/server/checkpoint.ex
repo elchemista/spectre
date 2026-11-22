@@ -9,7 +9,9 @@ defmodule Spectre.Server.Checkpoint do
   codec accepts the listed portable records; custom application structs must
   be projected into plain data by the application before acquisition.
 
-  Consent waits are restored suspended and require a fresh presentation.
+  A cold recovery restores consent waits suspended and requires a fresh
+  presentation. When a supervised Server reattaches to its live Managed GAM,
+  its foreground wait resumes if Managed still holds that presentation.
   Pending governed commands keep their referenced wait uncertain until recovery
   finishes, so a concurrent resume cannot start another resolution.
   Unacknowledged governed commands require host reconciliation; they are never
@@ -27,6 +29,9 @@ defmodule Spectre.Server.Checkpoint do
   Known unstarted governed requests are rejected; already-started governed
   requests reconcile their original journal through GAM.
 
+  Scoped tool adapters and exposed Flow Ports participate in the fingerprint
+  through one cached digest of their code identities.
+
   With `payload_store: {module, options}`, the application stores the encoded
   snapshot and the coordination Store receives only an opaque reference. The
   callback runs in a supervised task; this existing ordered durability barrier
@@ -37,6 +42,7 @@ defmodule Spectre.Server.Checkpoint do
   """
   alias Spectre.GAM.Canonical.Value
   alias Spectre.Payload.Store, as: PayloadStore
+  alias Spectre.Server.GAM.Managed
   alias Spectre.Server.Store.Disk
   alias Spectre.{Definition, Route}
   alias Spectre.Server.Router
@@ -77,6 +83,24 @@ defmodule Spectre.Server.Checkpoint do
     end
   end
 
+  @doc false
+  @spec retire(nil | tuple()) :: term()
+  def retire(nil), do: :ok
+
+  def retire(configuration) do
+    {module, store, key} = storage(configuration)
+
+    case module.fetch(store, key) do
+      {:ok, %{revision: revision}} -> module.delete(store, key, revision)
+      :not_found -> :ok
+      error -> error
+    end
+  rescue
+    _ -> {:error, :checkpoint_store_unavailable}
+  catch
+    :exit, _ -> {:error, :checkpoint_store_unavailable}
+  end
+
   defp load_entry(:not_found, state), do: state
 
   defp load_entry({:ok, %{revision: revision, value: binary}}, state) do
@@ -85,9 +109,8 @@ defmodule Spectre.Server.Checkpoint do
          {:ok, projection} <- migrate_if_needed(saved, state),
          :ok <- validate(projection, state),
          :ok <- Spectre.Server.Contracts.validate_assigns(state.server, projection.assigns),
+         projection = restore_projection(state.agent, projection),
          :ok <- Spectre.Server.Contracts.validate_retained(state.server, projection) do
-      projection = restore_projection(state.agent, projection)
-
       migrated? =
         Map.get(saved, :definition_fingerprint) != Map.get(projection, :definition_fingerprint)
 
@@ -99,10 +122,18 @@ defmodule Spectre.Server.Checkpoint do
 
   defp restore_state(state, projection, revision) do
     recovering = recovering_pending_ids(projection.outbox, projection.pending)
+    foreground = restore_foreground(state, projection.pending, recovering)
+    foreground = foreground || restore_input_focus(projection.pending)
 
     pending =
       Map.new(projection.pending, fn {id, pending} ->
-        status = if MapSet.member?(recovering, id), do: :uncertain, else: :suspended
+        status =
+          cond do
+            MapSet.member?(recovering, id) -> :uncertain
+            id == foreground and not is_nil(foreground) -> :foreground
+            true -> :suspended
+          end
+
         {id, Map.put(pending, :status, status)}
       end)
 
@@ -118,7 +149,7 @@ defmodule Spectre.Server.Checkpoint do
         history: projection.history,
         current_flow: projection.current_flow,
         current_scope: projection.current_scope,
-        foreground: nil,
+        foreground: foreground,
         current: projection.current,
         queue: :queue.from_list(projection.queue)
     }
@@ -128,6 +159,30 @@ defmodule Spectre.Server.Checkpoint do
       external_submissions: Map.get(projection, :external_submissions, %{}),
       seen_event_order: Map.get(projection, :seen_event_order, Map.keys(projection.seen_events))
     })
+  end
+
+  defp restore_foreground(%{gam_reattached: true, managed_owner: owner}, pending, recovering)
+       when is_pid(owner) do
+    with [{id, %{kind: :consent, presentation: %{ref: ref}}}] <-
+           Enum.filter(pending, fn {_id, wait} -> wait.status == :foreground end),
+         false <- MapSet.member?(recovering, id),
+         true <- Managed.presentation_ready?(owner, ref) do
+      id
+    else
+      _ -> nil
+    end
+  end
+
+  defp restore_foreground(_state, _pending, _recovering), do: nil
+
+  defp restore_input_focus(pending) do
+    Enum.find_value(pending, fn
+      {id, %{status: :foreground, input_wait: wait}} ->
+        if Spectre.Server.InputWait.live?(wait), do: id
+
+      _ ->
+        nil
+    end)
   end
 
   defp recovering_pending_ids(outbox, pending) do
@@ -384,8 +439,7 @@ defmodule Spectre.Server.Checkpoint do
   def project_event(event) do
     input = %{event.input | raw: nil}
     routing = project_routing(event.routing)
-    # A recovered consent must be re-presented. Transport receipts are one-use
-    # runtime credentials, never part of the durable conversation snapshot.
+    # Transport receipts are one-use runtime credentials and stay in memory.
     event |> Map.delete(:consent_proof) |> Map.merge(%{input: input, routing: routing})
   end
 
@@ -427,7 +481,15 @@ defmodule Spectre.Server.Checkpoint do
     snapshot = route_snapshot(Map.get(routing, :route), Map.get(routing, :route_key))
 
     routing =
-      Map.take(routing, [:route_key, :protected, :reason, :scope, :input, :previous_route_keys])
+      Map.take(routing, [
+        :route_key,
+        :protected,
+        :reason,
+        :scope,
+        :input,
+        :previous_route_keys,
+        :params
+      ])
 
     routing = if snapshot, do: Map.put(routing, :checkpoint_route, snapshot), else: routing
 
@@ -576,22 +638,24 @@ defmodule Spectre.Server.Checkpoint do
   end
 
   defp definition_fingerprint(state) do
-    modules =
+    {definition_modules, flow_modules} =
       if definition_module?(state.agent) do
-        definition_modules(state.agent, MapSet.new())
+        definition_modules(state.agent, {MapSet.new(), MapSet.new()})
       else
-        MapSet.new([state.agent])
+        {MapSet.new([state.agent]), MapSet.new()}
       end
 
     modules =
-      modules
+      definition_modules
       |> MapSet.put(state.server)
       |> MapSet.union(MapSet.new(Spectre.Server.Tool.adapter_modules(state.server)))
-      |> Enum.sort()
-      |> Enum.map(fn module ->
-        Code.ensure_loaded!(module)
-        {module, module.__info__(:md5)}
-      end)
+
+    binding_modules =
+      state
+      |> Map.get(:tool_bindings, %{})
+      |> Spectre.Server.Tool.scoped_adapter_modules()
+      |> MapSet.union(flow_modules)
+      |> MapSet.difference(modules)
 
     canonical =
       if definition_module?(state.agent) do
@@ -608,14 +672,53 @@ defmodule Spectre.Server.Checkpoint do
     %{
       version: 1,
       canonical: canonical,
-      modules: modules,
+      modules: code_identities(modules),
       checkpoint_version: Keyword.get(state.opts, :checkpoint_version, 1)
     }
+    |> put_binding_code_digest(binding_modules)
+  end
+
+  defp code_identities(modules) do
+    modules
+    |> Enum.sort()
+    |> Enum.map(fn module ->
+      Code.ensure_loaded!(module)
+      {module, module.module_info(:md5)}
+    end)
+  end
+
+  defp put_binding_code_digest(fingerprint, binding_modules) do
+    case code_identities(binding_modules) do
+      [] ->
+        fingerprint
+
+      identities ->
+        bytes = :erlang.term_to_binary(identities, [:deterministic])
+        Map.put(fingerprint, :binding_code_digest, :crypto.hash(:sha256, bytes))
+    end
   end
 
   @doc false
   def refresh_fingerprint(state),
     do: Map.put(state, :definition_fingerprint_cache, definition_fingerprint(state))
+
+  @doc false
+  @spec validate_hot_upgrade(map(), map()) :: :ok | {:error, :checkpoint_binding_changed}
+  def validate_hot_upgrade(state, upgraded) do
+    from = Map.get(cached_fingerprint(state), :binding_code_digest)
+    to = Map.get(cached_fingerprint(upgraded), :binding_code_digest)
+
+    # Restored continuations can be migrated against their saved routing hints.
+    # A live worker or wait can still return to the previous callback contract.
+    active? =
+      not is_nil(state.current) or not :queue.is_empty(state.queue) or
+        Enum.any?(
+          [state.pending, state.outbox, state.inbox, state.workers, state.operations],
+          &(map_size(&1) > 0)
+        )
+
+    if from != to and active?, do: {:error, :checkpoint_binding_changed}, else: :ok
+  end
 
   defp cache_fingerprint(state) do
     if Map.has_key?(state, :definition_fingerprint_cache),
@@ -776,9 +879,9 @@ defmodule Spectre.Server.Checkpoint do
       else: {:error, :checkpoint_migration_changed_reconciliation}
   end
 
-  defp definition_modules(module, seen) do
+  defp definition_modules(module, {seen, flows}) do
     if MapSet.member?(seen, module) do
-      seen
+      {seen, flows}
     else
       definition = Definition.fetch!(module)
       seen = MapSet.put(seen, module)
@@ -790,11 +893,18 @@ defmodule Spectre.Server.Checkpoint do
 
       seen = if definition.stack, do: MapSet.put(seen, definition.stack), else: seen
 
-      Enum.reduce(definition.skills, seen, fn mount, seen ->
-        definition_modules(mount.module, seen)
+      flows = Enum.reduce(definition.rules, flows, &collect_flow_module/2)
+
+      Enum.reduce(definition.skills, {seen, flows}, fn mount, accumulator ->
+        definition_modules(mount.module, accumulator)
       end)
     end
   end
+
+  defp collect_flow_module(%{handler: {:server, _, [flow_port: {_, _, module}]}}, set),
+    do: MapSet.put(set, module)
+
+  defp collect_flow_module(_, set), do: set
 
   defp validate(%{version: 1, agent: agent, server: server, identity: identity} = value, state) do
     cond do

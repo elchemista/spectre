@@ -13,6 +13,15 @@ defmodule Spectre.Operation.Events do
 
   @registry Spectre.Operation.EventRegistry
 
+  @doc """
+  Subscribes the caller to committed events for an Instance or its reference.
+
+  Optional `:types`, `:kinds`, and `:loop_ids` filters each accept one value
+  or a list. A missing filter allows every value. Messages are
+  `{:spectre, :operation_event, event}` or
+  `{:spectre, :inference_event, event}`. Inference events use kind
+  `:inference` and match `:loop_ids` against the inference ID.
+  """
   @spec subscribe(GenServer.server() | Ref.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def subscribe(instance_or_ref, opts \\ []) do
     with {:ok, ref} <- instance_ref(instance_or_ref) do
@@ -26,6 +35,7 @@ defmodule Spectre.Operation.Events do
     end
   end
 
+  @doc "Removes the caller's subscriptions for the Instance or its reference."
   @spec unsubscribe(GenServer.server() | Ref.t()) :: :ok | {:error, term()}
   def unsubscribe(instance_or_ref) do
     with {:ok, ref} <- instance_ref(instance_or_ref) do

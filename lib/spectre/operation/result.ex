@@ -57,6 +57,14 @@ defmodule Spectre.Operation.Result do
           metadata: map()
         }
 
+  @doc """
+  Builds a result using the attempt's identity, epoch, fencing token, and
+  revisions. The payload is stored as `:value` on `:ok` and as `:error` on
+  `:error` or `:ambiguous`.
+
+  Options are `:id`, `:receipt`, `:usage`, `:finished_at` (in milliseconds),
+  `:artifacts`, and `:metadata`.
+  """
   @spec new(Spectre.Operation.Attempt.t(), :ok | :error | :ambiguous, term(), keyword()) :: t()
   def new(%Spectre.Operation.Attempt{} = attempt, status, value, opts \\ [])
       when status in @statuses do
@@ -83,6 +91,7 @@ defmodule Spectre.Operation.Result do
     validate!(result)
   end
 
+  @doc "Checks the result's correlation fields, status, timestamp, usage, and portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = result) do
     cost =
@@ -142,6 +151,7 @@ defmodule Spectre.Operation.Result do
     end
   end
 
+  @doc "Returns a valid result or raises `ArgumentError`."
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = result) do
     case validate(result) do

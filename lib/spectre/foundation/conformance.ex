@@ -232,6 +232,7 @@ defmodule Spectre.Foundation.Conformance do
   def verify_instance_checkpoint(_checkpoint, identity),
     do: {:error, {:invalid_foundation_instance_identity, shape(identity)}}
 
+  @doc "Verifies an Instance checkpoint through `verify_instance_checkpoint/1`."
   @spec verify_checkpoint(binary() | map()) :: {:ok, report()} | {:error, term()}
   def verify_checkpoint(checkpoint), do: verify_instance_checkpoint(checkpoint)
 

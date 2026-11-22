@@ -47,6 +47,14 @@ defmodule Spectre.Operation.Outcome do
           metadata: map()
         }
 
+  @doc """
+  Builds a terminal outcome for the specified category.
+
+  Use `:reason` or `:result` to record the terminal decision. Options
+  `:limit` and `:consumed` describe a budget, while `:last_revision`,
+  `:partial`, `:artifacts`, and `:metadata` capture supporting data.
+  `:at` defaults to the current system time in milliseconds.
+  """
   @spec new(category(), keyword()) :: t()
   def new(category, opts \\ []) when category in @categories and is_list(opts) do
     outcome = %__MODULE__{
@@ -65,6 +73,7 @@ defmodule Spectre.Operation.Outcome do
     validate!(outcome)
   end
 
+  @doc "Checks the terminal category, timestamp, revision, container shapes, and portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = outcome) do
     cond do
@@ -92,6 +101,7 @@ defmodule Spectre.Operation.Outcome do
     end
   end
 
+  @doc "Returns a valid outcome or raises `ArgumentError`."
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = outcome) do
     case validate(outcome) do

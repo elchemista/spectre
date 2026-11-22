@@ -1,7 +1,7 @@
-# Spectre 0.4 API guide
+# Spectre 0.4.1 API guide
 
 New applications use a declarative `Spectre.Agent` and an application
-`Spectre.Server`, backed by `Spectre.Stack`. This page maps the actual API to
+`Spectre.Server`. Add a `Spectre.Stack` to install capabilities. This page maps the API to
 that architecture. [PUBLIC_API.md](PUBLIC_API.md) lists checked callable
 contracts; [Stack tools](STACK_TOOLS.md) documents the additional tool-descriptor
 contract whose full surface is not yet in that machine-checked list.
@@ -50,6 +50,21 @@ to an authorized consumer, including Skill proposal provenance. Separate local
 checkpoints do not split this ledger. See [Skills](SKILLS.md) for concurrency,
 timers, recovery and rejection handling.
 
+## Address an on-demand Activity
+
+Start work from an application callback using
+`start_activity(ctx, type, args, opts)`. The type is a local Stack name or an
+installed `{installation, type}` pair. The Activity's `handle_start/2` receives
+the arguments. Core owns its process and lifecycle.
+
+From an authenticated consumer, use `Spectre.Server.activities(root)` or
+`Spectre.Server.activity(root, ref)` to read the work, and
+`Spectre.Server.signal_activity(root, ref, signal, opts)` or
+`Spectre.Server.cancel_activity(root, ref, opts)` to control it. Target a question
+with `Spectre.Server.input(root, answer, activity: ref, pending: {id, revision})`.
+An Activity's governed effects use the same presentation and decision APIs.
+[Identity, options and lifecycle events](AGENT_SERVER.md#run-a-background-activity).
+
 ## External human consent
 
 `Spectre.Server.receive_approval(server, message)` is the host ingress for the
@@ -87,6 +102,8 @@ checkpoints. Identity, Agent, input, routing and pending are read-only views.
 | `generate(ctx, prompt, opts \\ [])` | Ask the configured response model; result is `{:generated, response}`. |
 | `classify(ctx, input, opts \\ [])` | Classify using the configured classifier/service and declared choices. |
 | `propose(ctx, operation, args, opts \\ [])` | Submit a concrete operation through the host GAM bridge. |
+| `call_tool(ctx, {installation, operation}, args, opts \\ [])` | Call a scoped Stack tool and dispatch its projected or governed result to the originating handler. |
+| `start_activity(ctx, type, args, opts \\ [])` | Start one supervised execution. Omit `as:` for a generated reference. `scope:` narrows its available tools. |
 | `call_actor(ctx, actor, request, opts \\ [])` | Run a GenServer request in a worker. |
 | `await_reply(ctx, id, opts \\ [])` | Register a background actor wait. |
 | `await_input(ctx, id, opts \\ [])` | Register a foreground user-answer wait. |
@@ -140,8 +157,11 @@ See [GAM](GAM.md) and [Actions](ACTIONS.md).
 
 ## Install and extend tools
 
+`c:Spectre.Stack.Installable.integration/1` declares tools, services, reusable
+flows and Activity types. An Agent can select installed flows through `expose/1`.
 `c:Spectre.Stack.Installable.tools/1` returns named descriptors with a closed
-operation set. `use Spectre.Server, tools: MyApp.AI` generates local helpers.
+operation set. `use Spectre.Server, tools: MyApp.AI` generates local helpers
+for declarations that provide them.
 Cognitive adapters prepare, invoke and project portable results. Governed
 operations normalize to `propose` before outbox acquisition and require a
 standard GAM binding. Package `bind:` config selects an operation, not authority.

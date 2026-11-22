@@ -406,11 +406,7 @@ defmodule Spectre.Server.ResetTest do
     assert_receive {:governed_result, ^server, {:governed, %{outcome: %{status: :succeeded}}}},
                    5_000
 
-    assert eventually(fn ->
-             status = Server.status(server)
-             managed = :sys.get_state(:sys.get_state(server).managed_owner)
-             not status.busy and status.workers == 0 and map_size(managed.workers) == 0
-           end)
+    assert eventually(fn -> reset_ready?(server) end)
 
     assert :ok = Server.reset(server)
     assert Server.status(server).session != session
@@ -424,6 +420,7 @@ defmodule Spectre.Server.ResetTest do
     assert :ok = Server.presented(server, old_presentation)
     assert_receive {Server, ^server, {:pending, ^old_input, _}}, 5_000
 
+    assert eventually(fn -> reset_ready?(server) end)
     assert :ok = Server.reset(server)
     assert Server.status(server).pending == []
     assert {:error, :stale_presentation} = Server.decide(server, nil, old_presentation, :confirm)
@@ -628,6 +625,12 @@ defmodule Spectre.Server.ResetTest do
       journal: start_supervised!({Managed.Store, []}),
       ledger: start_supervised!({Spectre.GAM.Ledger.Store.ETS, []})
     }
+  end
+
+  defp reset_ready?(server) do
+    status = Server.status(server)
+    managed = :sys.get_state(:sys.get_state(server).managed_owner)
+    not status.busy and status.workers == 0 and map_size(managed.workers) == 0
   end
 
   defp eventually(check, attempts \\ 100)

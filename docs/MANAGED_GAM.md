@@ -19,10 +19,13 @@ Spectre.Server.start_link(
 )
 ```
 
-The operation must have a registered effect adapter in the selected Stack.
-Installing a package makes its capabilities available; the root's operation
-allowlist and mount restrictions determine what this Agent can propose.
-Starting without `gam:` creates an ephemeral boundary with no allowed effects.
+`agent:` selects the Agent's routing and Server callbacks. The authenticated
+`consumer:` receives the presentation and later submits the person's decision.
+In `gam.operations`, the pair `{:kinetic, :send_email}` names a registered
+host operation and `confirm: true` requires consent for every invocation.
+The allowlist and each mount's restrictions determine the available
+consequences. Starting without `gam:` creates an ephemeral boundary with
+an empty effect allowlist.
 
 Supply identity from the authenticated application transport. Accepted keys are
 `subject`, `conversation`, `task`, `tenant`, `org` and `organization`, using
@@ -43,6 +46,7 @@ trusted consumer; a BEAM PID alone cannot prove that identity.
 | `storage: {:disk, path}` | Durable GAM history and coherent default coordination/checkpoint storage. |
 | `storage: :ledger` | Use the configured Ledger Stack resource for coordination, canonical history and its optional Domain projection. |
 | `storage: {:ledger, {Adapter, options}}` | Use a compatible application-supplied GAM adapter and coordination `store:`. |
+| `storage: {MyApp.Storage, reference}` | Use a custom unified Server Store. The same provider reference reaches the coordination, ledger and optional projection callbacks. |
 
 With PostgreSQL Ledger, the application starts its Repo and installs migrations
 before starting Servers. Startup creates neither databases nor tables. Its
@@ -63,6 +67,25 @@ Spectre.Server.start_link(
 Restart verifies the same authority foundation and configuration. A different
 identity, operation policy or explicit authority deadline cannot silently reuse
 old authority. Selecting Ledger does not migrate an existing disk Domain.
+
+When an OTP supervisor restarts an AgentServer after a crash, the new Root
+reattaches to the live Managed GAM owner on the same node. The Domain and
+session keep their identity. A checkpointed foreground consent can continue
+with its original presentation and deadline while GAM still holds that
+presentation. Recovery reconciles any effect GAM already admitted before it
+continues the turn. If the original input was checkpointed and its one-use
+consent receipt is still live, recovery continues that same input. Resolve
+the replacement Root PID through its registered name or your supervisor before
+sending input or a consent decision.
+
+Direct `start_link/1` ties Managed GAM to the Root's lifetime. A supervised
+shutdown also closes Managed GAM. On a cold restart, durable storage can
+recover the Domain and command history, and pending consent requires a fresh
+presentation. RAM-only recovery depends on the live owner, which releases its
+resources if the Root does not return within the configured shutdown timeout.
+An explicit `Spectre.Server.reset/2` starts a new session. A crash before reset
+activation leaves the previous authority in force. Once a durable activation
+begins, automatic restart needs a record of the selected generation.
 
 A projection-backed Domain loads the records needed by a command, commits changed
 rows and releases historical records. Active Duties and relevant proof groups
@@ -90,9 +113,11 @@ def handle_result(:sent, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
 def handle_result(tag, result, ctx), do: super(tag, result, ctx)
 ```
 
-`propose` returns a command-bearing Context. Admission is distinct from external
-success. The effect adapter reports the milestone actually observed; uncertain
-outcomes retain an unresolved Duty rather than triggering a blind retry.
+`propose/4` takes the current callback Context, the host operation, its
+concrete arguments and options. Here `:sent` is the local result tag.
+The operation and arguments freeze before admission. The later result's
+Outcome describes the milestone actually observed. Uncertain execution
+requires reconciliation of the original Act.
 Keep consequential I/O inside registered effect adapters. Managed GAM mediates
 the declared boundary within the BEAM; it cannot retroactively govern direct
 HTTP calls made inside application callbacks.
@@ -105,18 +130,45 @@ The consumer receives:
 {Spectre.Server.GAM.Managed, owner, {:presentation, material}}
 ```
 
-Render the frozen material and its controls, then call
-`Spectre.Server.presented(server, presentation_ref)`. After the human makes a
-separate choice, call
+`owner` identifies the Managed GAM process that emitted the card. Use the
+Root's `server` handle to acknowledge and decide. Render
+`material["rendered_payload"]`, retain `material["presentation_ref"]` and
+call `Spectre.Server.presented(server, presentation_ref)` after actual
+rendering. After the human makes a separate choice, call
 `Spectre.Server.decide(server, skill_or_nil, presentation_ref, :confirm | :reject)`.
-Only the configured consumer can use these root APIs. The exact presentation,
-pending target and one-use proof are checked; rendering acknowledgement is not
-consent. A model label, unrelated process or stale card cannot approve.
+Pass the mount ID for a Skill and `nil` for Root or Activity consent. Only
+the configured consumer can use these root APIs. GAM checks the exact
+presentation, pending target and one-use proof during the decision.
 
 Text-based input can use `handle_pending/3` with `confirm_pending`,
 `reject_pending` and `explain_pending`. The configured interpreter and original
 input provenance still bind the response to the current Presentation. See
 [Pending lifecycle](PENDING_LIFECYCLE.md) for suspension, resume and expiry.
+
+## Consent from an Activity
+
+The consumer renders and acknowledges the same `{:presentation, material}`
+envelope for an Activity's governed command. After acknowledgement, match
+`{Spectre.Server, root, {:activity, identity, {:pending, presentation_ref}}}`
+to associate the card with its Activity `identity.ref`. Decide through the
+Root with `Spectre.Server.decide(root, nil, presentation_ref, choice)`.
+The pending event is readiness to accept the person's choice. The effect
+result arrives separately. When a relay to an Activity or Skill times out,
+`decide/4` returns `{:error, :decision_outcome_unknown}`. The target can
+still process its queued decision. Wait for the pending state or governed
+outcome before submitting another decision.
+
+For an ordinary Activity question, handle its `{:waiting_input, wait}`
+lifecycle event. Answer with
+`Spectre.Server.input(root, text, activity: ref, pending: {wait.id, wait.revision})`.
+Here `ref` names the Activity execution and the pending pair selects that
+question. Send consent through the Presentation reference instead.
+
+Use `signal_activity(root, ref, {:revise, details}, if_revision: revision)`
+to request a specific Activity revision. Once applied, that change invalidates
+the old pending presentation. Late Outcomes for already admitted acts can
+still arrive as an Activity `{:effect, result}` event, even if the execution
+that requested them has ended. [Activity lifecycle](AGENT_SERVER.md#run-a-background-activity).
 
 ## Customize business policy
 
@@ -133,13 +185,19 @@ end
 def handle_action(action, ctx), do: super(action, ctx)
 ```
 
-An override can reject work or require consent; it cannot expand a mandate or
-remove required confirmation. Custom presentation material is checked against
-frozen arguments and authority. The callback prepares policy data and performs
-no effect itself. [Server contracts](SERVER_CONTRACTS.md) adds optional application
-schemas and permission diagnostics.
+The application supplies `ctx.assigns[:observed_email]` from an earlier step.
+`message` explains the decision in the presentation, and `expires_in: 60_000`
+requests one minute to decide within the configured consent limit. Other actions
+use the default policy through `super`.
 
-## Share the boundary with Skills
+An override can reject work or require consent within the existing mandate.
+Applicable confirmation requirements remain binding. Managed GAM checks custom
+presentation material against frozen arguments and authority. The callback
+prepares policy data. The registered executor handles the effect after admission.
+[Server contracts](SERVER_CONTRACTS.md) adds optional application schemas and
+permission diagnostics.
+
+## Share the boundary with Skills and Activities
 
 Mounted `Spectre.Skill` servers receive their root's existing GAM connection.
 They have independent GenServers, state, workers and checkpoints, with one shared
@@ -150,6 +208,10 @@ replace the boundary or grant authority.
 Every proposal retains Skill provenance. Consent addresses its exact mount and
 Presentation. Closing a conversation or expiring an intention does not erase an
 Act or Duty. See [Skills](SKILLS.md) for routing and the consumer API.
+
+Activities share the same Domain as the Root. The host's allowed Activity
+types and scoped tools narrow the operations an Activity can use. A governed
+operation still needs host registration, an applicable mandate and admission.
 
 ## Submit from a trusted actor
 

@@ -12,6 +12,7 @@ defmodule Spectre.Receipt.Sink.Memory do
 
   use Agent
 
+  @doc "Starts an empty in-memory sink, optionally registered under `:name`."
   @spec start_link(keyword()) :: Agent.on_start()
   def start_link(opts \\ []) do
     Agent.start_link(fn -> %{receipts: %{}, payloads: %{}} end, Keyword.take(opts, [:name]))
@@ -73,6 +74,7 @@ defmodule Spectre.Receipt.Sink.Memory do
     end)
   end
 
+  @doc "Returns all appended envelopes in the sink selected by `:server`, in no specific order."
   @spec all(keyword()) :: [Envelope.t()]
   def all(opts), do: opts |> server() |> Agent.get(&Map.values(&1.receipts))
 

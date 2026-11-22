@@ -12,14 +12,23 @@ An existing Elixir billing client can stay independent of Spectre. Add it as an 
 | --- | --- |
 | A pure function in your own module | Call it in Elixir. Use a worker or actor for slow I/O; a synchronous call inside `handle_flow` occupies the Server. |
 | A governed operation callable with `propose` | A package with `effects/1` and an adapter with `execute_effect/3`. [Minimal working example](HANDLER_WALKTHROUGH.md). |
-| An `invoice(ctx, ...)` helper to read or issue | Add `tools/1`, describe the two paths and select the Stack in your Server. Follow the program below. |
+| Scoped calls from a Server, reusable Flow or Activity | Declare tools in `integration/1`, install the package and bind the Stack to the Agent. Follow the program below. |
+| A generated `invoice_draft(ctx, ...)` helper | Declare `helper: :invoice_draft` on the tool and set `tools:` on the Server. [Generated helpers](STACK_TOOLS.md#generated-helper-contract). |
 | A supervised client or pool | Start it in the application’s OTP tree, or use the package’s `child_specs/2` and supervise the Stack runtime. A plain function module needs no dedicated process. |
 
 ## 1. Adapt your existing client
 
-Copy the four Elixir blocks into `invoice_demo.exs` in a project using Spectre 0.4. The first module stands in for your existing SDK: test account draft D1 is at revision 3 with a total of EUR 24.00. Replace the **client boundary** with calls to your real billing system. The local example runs without a cloud account.
+Copy the four Elixir blocks into `invoice_demo.exs` in a project using Spectre
+0.4.1. The first module stands in for your existing SDK. Its draft D1 belongs
+to account-7 and is at revision 3 with a total of EUR 24.00. Replace the client
+boundary with calls to your billing system. The supplied client runs locally.
 
-The adapter translates contracts. `prepare/3` validates locally; for `{:issue, draft}` the payload is the list `[draft]`. `invoke/3` can read in a worker; `project/2` selects the data returned to the Server. Here the billing system allows the user to read this draft. If reading also requires approval, register it as a governed operation. Only `execute_effect/3` calls the issuing endpoint.
+The adapter translates contracts. `prepare(operation, payload, trusted)`
+validates the payload passed to `call_tool/4`. `invoke/3` reads in a worker and
+`project/2` selects the data returned to the Server. The client authorizes
+reading the current subject's draft. Register the read as a governed operation
+if your policy requires consent. `execute_effect/3` calls the issuing endpoint
+after GAM admits the frozen draft.
 
 ```elixir
 defmodule BillingDemo.Client do
@@ -37,9 +46,9 @@ end
 defmodule BillingDemo.Adapter do
   @behaviour Spectre.Server.GAM.EffectAdapter
 
-  def prepare(:draft, [id], _) when is_binary(id), do: {:ok, id}
-  def prepare(:issue, [%{"id" => id, "revision" => rev, "total_cents" => cents,
-                         "currency" => "EUR"} = draft], _)
+  def prepare(:draft, %{id: id}, _trusted) when is_binary(id), do: {:ok, id}
+  def prepare(:issue, %{"id" => id, "revision" => rev, "total_cents" => cents,
+                        "currency" => "EUR"} = draft, _trusted)
       when is_binary(id) and is_integer(rev) and is_integer(cents) do
     {:ok, Map.take(draft, ["id", "revision", "total_cents", "currency"])}
   end
@@ -48,7 +57,7 @@ defmodule BillingDemo.Adapter do
   def invoke(:draft, id, context),
     do: BillingDemo.Client.draft(context.service_context.identity.subject, id)
 
-  def project(:draft, result), do: {:ok, result}
+  def project(_operation, result), do: {:ok, result}
 
   @impl true
   def execute_effect(:issue, draft, context),
@@ -60,19 +69,29 @@ The account comes from the application’s authenticated identity. In production
 
 ## 2. Register both operations and install the package
 
-`tools/1` creates the helper name, `invoice`. For the `:draft` read, `:safe` permits replay of an interrupted read and `max_bytes` bounds portable data. For `:issue`, the `operation: :issue_invoice` field points to the **matching key** in `effects/1`. That entry registers the adapter GAM can call and the local atom `:issue` passed to `execute_effect/3`. The `[:subject]` partition requires a subject. Real credentials belong to the client configured by the application.
+`integration/1` registers `:draft` and `:issue` under the local installation
+ID `:billing`. The adapter validates both payloads. The `args:` fields and
+`access: :subject_scoped` describe the public tool schema. `retry: :safe`
+permits replay of an interrupted read and `max_bytes:` bounds its portable data.
+The issue tool's `governed: :issue_invoice` points to the matching key in
+`effects/1`. That entry supplies the local operation `:issue` to
+`execute_effect/3` and describes issuing as non-idempotent. `partition: [:subject]`
+binds the effect to the authenticated subject. The example uses arguments as
+effect material, no custom schema hash, and empty immutable adapter configuration.
+[All tool and effect options](STACK_TOOLS.md).
 
 ```elixir
 defmodule BillingDemo.Package do
-  use Spectre.Stack.Installable, id: :billing, version: "1.0.0"
+  use Spectre.Stack.Installable, id: :billing, version: "1.0.0", spectre: "~> 0.4.1"
 
   @impl true
-  def tools(_) do
-    %{invoice: %{contract: 1, adapter: BillingDemo.Adapter, default: nil,
-                 operations: %{
-                   draft: %{path: :cognitive, retry: :safe, max_bytes: 4096},
-                   issue: %{path: :governed, operation: :issue_invoice, max_bytes: 4096}
-                 }}}
+  def integration(_config) do
+    Spectre.Integration.new()
+    |> Spectre.Integration.tool(:draft, BillingDemo.Adapter,
+      args: [id: :string], access: :subject_scoped, retry: :safe, max_bytes: 4096)
+    |> Spectre.Integration.tool(:issue, BillingDemo.Adapter,
+      args: [id: :string, revision: :integer, total_cents: :integer, currency: :string],
+      governed: :issue_invoice, max_bytes: 4096)
   end
 
   @impl true
@@ -89,9 +108,16 @@ defmodule BillingDemo.Stack do
 end
 ```
 
-## 3. Connect the route, helper and continuations
+## 3. Connect the route, tools and continuations
 
-`stack:` on the Agent selects the installed package. `tools:` on the Server generates the local `invoice/3` function. When the user types “issue D1”, the first call reads the draft. The tag `:loaded` returns with the client reply. That clause calls the helper again, this time with `:issue` and `on_result: :issued`. This second call becomes a GAM proposal.
+`stack:` on the Agent supplies the installed operations. The Agent routes
+“issue D1” to `handle_flow({:billing, :issue}, input, ctx)`. Its
+`call_tool(ctx, {:billing, :draft}, %{id: id}, on_result: :loaded)`
+uses the installation and operation pair to fetch a draft. The
+`:loaded` result clause receives that reply and schedules the `:issue` tool.
+That command becomes a GAM proposal for `:issue_invoice`. The tag `:issued`
+connects it to the final result clause, including approval, rejection or errors.
+`super/3` delegates other cases to the Server's default callback.
 
 ```elixir
 defmodule BillingDemo.Agent do
@@ -103,16 +129,16 @@ defmodule BillingDemo.Agent do
 end
 
 defmodule BillingDemo.Server do
-  use Spectre.Server, tools: BillingDemo.Stack
+  use Spectre.Server
 
   @impl true
   def handle_flow({:billing, :issue}, %{text: "issue " <> id}, ctx),
-    do: invoice(ctx, {:draft, id}, on_result: :loaded)
+    do: call_tool(ctx, {:billing, :draft}, %{id: id}, on_result: :loaded)
   def handle_flow(key, input, ctx), do: super(key, input, ctx)
 
   @impl true
   def handle_result(:loaded, {:ok, draft}, ctx),
-    do: invoice(ctx, {:issue, draft}, on_result: :issued)
+    do: call_tool(ctx, {:billing, :issue}, draft, on_result: :issued)
   def handle_result(:loaded, {:error, :not_found}, ctx), do: respond(ctx, "Draft unavailable.")
   def handle_result(:issued, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
     do: respond(ctx, "Invoice issued.")
@@ -123,7 +149,14 @@ end
 
 ## 4. Try a missing draft, rejection and approval
 
-The consumer below drives one conversation at a time. The `confirm: true` option requires consent for issuing on every route. A missing draft produces an immediate reply; for an existing draft you see the amount, currency and revision before choosing.
+The consumer below drives one conversation at a time. `agent:` selects the
+router and Server, `consumer:` registers the host process to receive events,
+and `identity.subject` supplies the authenticated account. The configured
+operation's `confirm: true` requires consent on every route. `Server.input/2`
+returns the interaction ID. A reply carries that ID as `turn`. For an
+existing draft, acknowledge the presentation after showing the material, then
+pass its exact reference to `Server.decide/4`. The second argument `nil`
+selects the Root. The other option is the mount ID for a Skill-owned decision.
 
 ```elixir
 alias Spectre.Server
@@ -162,4 +195,11 @@ GenServer.stop(server)
 
 Run `mix run invoice_demo.exs D2` for `Draft unavailable.`. Run `mix run invoice_demo.exs D1` and type `no` for `Issuing declined.`. Run it again with `yes` for `SDK: issued D1 revision 3` followed by `Invoice issued.`.
 
-In your application, keep the client in your library, place the adapter and Installable in project modules, and put the consumer in your chat or LiveView. If you only need issuing via `propose(ctx, :issue_invoice, args, on_result: :issued)`, you can omit the generated helper and its `tools/1`. Keep `effects/1`, the installed Stack, application checks and GAM policy.
+In your application, put the consumer in your chat or LiveView and configure the
+client through your OTP supervision tree or the Stack runtime. To call the
+same draft tool through a generated name, add `helper: :invoice_draft` to its
+declaration and set `use Spectre.Server, tools: BillingDemo.Stack`.
+Then `invoice_draft(ctx, %{id: id}, on_result: :loaded)` takes the same payload.
+To issue a prepared draft through a direct proposal, call
+`propose(ctx, :issue_invoice, draft, on_result: :issued)` with the package's
+installed effect registration and the host's operation policy.

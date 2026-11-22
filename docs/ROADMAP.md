@@ -15,6 +15,18 @@ The implemented contracts are described in [Architecture](ARCHITECTURE.md),
 [Managed GAM](MANAGED_GAM.md) and [Migration](MIGRATING_TO_0_4.md).
 [Release checks](RELEASE_0_4.md) describes how to verify a candidate.
 
+## Spectre 0.4.1
+
+Stack packages can declare typed services, tools, reusable flows and Activity
+types. Agents decide which flows to expose. A Server can keep serving chat while
+one or more Activities run under its supervision. Use the execution reference
+to observe and control each one. [Stack integrations](STACK.md#typed-package-integrations),
+[Activity lifecycle](AGENT_SERVER.md#run-a-background-activity).
+
+Existing package hooks still cover shared resources, diagnostics and external
+ingress. Prism, Documents and Directive illustrate service selection, exposed
+flows and on-demand OTP work. [Examples](EXAMPLES.md).
+
 ## Compatibility and future changes
 
 Instance/Run remains a supported compatibility runtime. Any future removal or

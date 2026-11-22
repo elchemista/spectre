@@ -3,6 +3,9 @@ defmodule Spectre.Server.Command do
   @enforce_keys [:kind, :args]
   defstruct [:kind, :args, opts: []]
 
+  alias Spectre.Server.Checkpoint
+  alias Spectre.Stack.Value, as: StackValue
+
   @type t :: %__MODULE__{kind: atom(), args: list(), opts: keyword()}
 
   @kinds [
@@ -13,6 +16,12 @@ defmodule Spectre.Server.Command do
     :call_actor,
     :delegate,
     :tool,
+    :call_tool,
+    :start_activity,
+    :signal_activity,
+    :cancel_activity,
+    :complete_activity,
+    :fail_activity,
     :await_reply,
     :resolve_await,
     :confirm_pending,
@@ -49,8 +58,12 @@ defmodule Spectre.Server.Command do
 
   def validate(_), do: {:error, :invalid_command}
 
-  def validate_internal(%__MODULE__{kind: :tool_call, args: [identity, _args], opts: opts})
-      when is_map(identity) and is_list(opts), do: timeout(opts)
+  def validate_internal(%__MODULE__{kind: :tool_call, args: [%{tool: tool}, _args], opts: opts})
+      when is_list(opts) do
+    if activity_name(tool) == :ok or tool_reference?(tool),
+      do: timeout(opts),
+      else: {:error, :invalid_tool_ref}
+  end
 
   def validate_internal(%__MODULE__{kind: :tool_rejected, args: [_result], opts: opts})
       when is_list(opts), do: :ok
@@ -82,12 +95,39 @@ defmodule Spectre.Server.Command do
   defp validate_args(:tool, [name, _input, expected], opts)
        when is_atom(name) and is_map(expected), do: timeout(opts)
 
+  defp validate_args(:call_tool, [ref, _input], opts),
+    do: if(tool_reference?(ref), do: timeout(opts), else: {:error, :invalid_tool_ref})
+
+  defp validate_args(:start_activity, [type, args], opts) do
+    with :ok <- activity_type(type),
+         :ok <- activity_key(Keyword.get(opts, :as)),
+         :ok <- activity_scope(Keyword.get(opts, :scope, :all)),
+         :ok <- activity_options(opts, [:as, :on_result, :scope]) do
+      Checkpoint.validate_value(args)
+    end
+  end
+
+  defp validate_args(:signal_activity, [target, signal], opts) do
+    with :ok <- activity_control(target, opts),
+         :ok <- Spectre.Server.ActivityBinding.validate_signal({:signal, signal}),
+         do: Checkpoint.validate_value(signal)
+  end
+
+  defp validate_args(:cancel_activity, [target], opts), do: activity_control(target, opts)
+
+  defp validate_args(kind, [value], []) when kind in [:complete_activity, :fail_activity],
+    do: Checkpoint.validate_value(value)
+
   defp validate_args(:delegate, [id, input], opts) when not is_nil(id) do
     with :ok <- Spectre.Server.Skills.validate_input(input), do: timeout(opts)
   end
 
   defp validate_args(:call_actor, [_actor, _request], opts), do: timeout(opts)
-  defp validate_args(:await_reply, [id], opts) when not is_nil(id), do: timeout(opts)
+
+  defp validate_args(:await_reply, [id], opts) when not is_nil(id) do
+    with :ok <- timeout(opts), do: Spectre.Server.InputWait.validate(opts)
+  end
+
   defp validate_args(:resolve_await, [id, _result], _opts) when not is_nil(id), do: :ok
 
   defp validate_args(kind, [id], opts)
@@ -106,6 +146,55 @@ defmodule Spectre.Server.Command do
   defp validate_args(:route_current_input, [], _opts), do: :ok
   defp validate_args(:no_response, [], _opts), do: :ok
   defp validate_args(_, _, _), do: {:error, :invalid_command_arguments}
+
+  defp activity_type({installation, type}) do
+    if StackValue.valid_id?(installation),
+      do: activity_name(type),
+      else: {:error, :invalid_activity_type}
+  end
+
+  defp activity_type(type), do: activity_name(type)
+
+  defp activity_key(nil), do: :ok
+  defp activity_key(key), do: activity_name(key)
+
+  defp activity_name(name) when is_atom(name) and name not in [nil, true, false], do: :ok
+  defp activity_name(_name), do: {:error, :invalid_activity_name}
+
+  defp activity_target(ref) when is_binary(ref) and byte_size(ref) > 0, do: :ok
+  defp activity_target(key), do: activity_name(key)
+
+  defp activity_scope(:all), do: :ok
+
+  defp activity_scope(scope) when is_list(scope) do
+    if Enum.all?(scope, &tool_reference?/1), do: :ok, else: {:error, :invalid_activity_scope}
+  end
+
+  defp activity_scope(_), do: {:error, :invalid_activity_scope}
+
+  defp tool_reference?({installation, operation}),
+    do: StackValue.valid_id?(installation) and activity_name(operation) == :ok
+
+  defp tool_reference?(_), do: false
+
+  defp activity_control(target, opts) do
+    with :ok <- activity_target(target),
+         :ok <- activity_options(opts, [:if_revision, :on_result]) do
+      case Keyword.fetch(opts, :if_revision) do
+        :error -> :ok
+        {:ok, revision} when is_integer(revision) and revision >= 0 -> :ok
+        _ -> {:error, :invalid_activity_revision}
+      end
+    end
+  end
+
+  defp activity_options(opts, allowed) do
+    keys = Keyword.keys(opts)
+
+    if Enum.uniq(keys) == keys and keys -- allowed == [],
+      do: Checkpoint.validate_value(opts),
+      else: {:error, :invalid_activity_options}
+  end
 
   defp timeout(opts) do
     case Keyword.get(opts, :timeout, 30_000) do

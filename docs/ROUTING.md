@@ -1,8 +1,18 @@
 # Routing
 
-Routing recognizes an input and selects a declared Server handler. An Agent
-declares the available intents and evidence; its Server implements the response
-or consequence. A route never grants execution authority.
+Routing recognizes input and selects a declared handler. The Agent chooses
+possible intents and evidence. The Server chooses whether to reply, generate
+text, call a tool or start an Activity. A route never grants execution authority.
+
+| What the user wants | What handles it |
+| --- | --- |
+| A known command such as “prices” | A declared route and its `handle_flow/3` clause. The reply can be a literal string. |
+| Open chat | `handle_flow(:unmatched, input, ctx)` can call `generate/2`. A model answers through the normal result callback. |
+| A mission inside chat | Route the intent by a declared label, or make a bounded classification from the current callback. Host code decides whether to call `start_activity/4`. |
+| A reply to a mission's question | The host targets the Activity and exact pending reference, or the runtime matches an eligible wait. [Reusable flows and replies](AGENT_SERVER.md#reusable-flows-and-targeted-answers). |
+
+An Agent that only handles open chat can omit declared routes and a Stack.
+It needs a Server, a response provider and a chat prompt. [Runnable examples](EXAMPLES.md).
 
 ## Combine regex, semantic matching and a classifier
 
@@ -29,8 +39,8 @@ defmodule MyApp.SupportAgent do
 end
 ```
 
-`MyApp.Embeddings` and `MyApp.IntentModel` are host adapters, not built-in
-modules. Supply `embed(text, opts)` returning numeric vectors and
+`MyApp.Embeddings` and `MyApp.IntentModel` are adapters supplied by the host.
+Supply `embed(text, opts)` returning numeric vectors and
 `complete(prompt, opts)` returning a declared intent label as text, with the
 models and credentials your application requires. See [provider contracts](#host-providers).
 The Stack and Server are application modules as shown in [Getting started](GETTING_STARTED.md).
@@ -40,6 +50,11 @@ through its regex. Other inputs can be recognized by similarity to the declared
 examples or classified as `:pricing` or `:technical`. Regex collects the first
 visible matching rule as hard evidence; the classifier is a fallback and does
 not run on every turn.
+
+`model MyApp.ChatModel` configures response generation separately. The
+embedding adapter supplies vectors. Vettore provides vector indexes and
+similarity search over compatible vectors. The classifier selects an eligible
+declared route label. These roles can use separate providers and models.
 
 ## Choose evidence strategies
 
@@ -95,7 +110,7 @@ end
 ```
 
 `"What is the price?"`, `"subscription plans"` and `"monthly subscription"`
-all select the pricing route. The [executable quickstart](https://github.com/elchemista/spectre/blob/0.4.0/docs/examples/agent_server_quickstart.exs)
+all select the pricing route. The [executable quickstart](EXAMPLES.md#deterministic-quickstart)
 supplies the Stack, Agent, Server and input loop for this variant.
 
 Bag and Jaro compare input and examples after lowercasing, trimming and
@@ -248,7 +263,32 @@ collect their inexpensive evidence. Custom arbitrators receive the complete
 evidence stream unless `hard_short_circuit: true` is set. A strategy list is
 therefore not a promise that every configured provider runs on each turn.
 
-## No match, ambiguity and provider failures
+## Open chat and routing fallbacks
+
+A Server can reply to chat whenever the router has no matching route. In this
+fragment `:chat` resolves to the application's prompt and the current input
+supplies its `@input` value.
+
+```elixir
+def handle_flow(:unmatched, _input, ctx), do: generate(ctx, :chat)
+```
+
+The standard result handler sends successful generated text to the consumer.
+Use your application's prompt context for prior turns, such as a bounded
+conversation summary passed in `assigns:`. [Prepare chat prompts](PROVIDERS.md#response-models-and-chat-prompts).
+
+A language model can select a mission route among declared intents. An Agent
+that declares `flow :work` and `on :research, semantic_examples: ["Research this topic"]`
+can use `:embedding` or `:llm_classifier` with the corresponding provider.
+Its Server starts the Activity in `handle_flow({:work, :research}, input, ctx)`.
+To classify a turn explicitly after routing, use
+`classify(ctx, input, choices: [:chat, :research], on_result: :intent)`.
+The result arrives at `handle_result(:intent, {:classified, label}, ctx)`.
+Write the two continuation clauses to generate a reply or start a mission.
+That call supplies a decision within the current callback path. It does not
+invoke a route or start an Activity on its own. [Runnable Directive example](EXAMPLES.md).
+
+## Distinguish ambiguity and provider failures
 
 Handle unmatched input in the Server and inspect `ctx.routing.reason`:
 
@@ -256,16 +296,17 @@ Handle unmatched input in the Server and inspect `ctx.routing.reason`:
 def handle_flow(:unmatched, input, ctx) do
   case ctx.routing.reason do
     :ambiguous -> respond(ctx, "Do you mean pricing or account management?")
-    :no_match -> generate(ctx, :understand, input: input, on_result: :answer)
+    :no_match -> generate(ctx, :understand, input: input)
     {:classifier_error, _reason} -> respond(ctx, "Recognition is temporarily unavailable.")
     _ -> respond(ctx, "Please clarify your request.")
   end
 end
 ```
 
-`:understand` is an application-defined prompt/continuation. There is no
-implicit `understand/` callback. This handler can clarify, consult memory or
-start another explicitly bounded classification step.
+`:understand` names an application prompt. `input:` passes the input
+selected by this clause to the prompt. The default `:generate` continuation
+handles the resulting text or error. Customize outcomes by passing
+`on_result:` and implementing the corresponding `handle_result/3` clause.
 
 A dataset miss is ordinary absence of evidence. A provider failure can still
 be followed by a successful later strategy; if recognition remains unavailable,
@@ -409,10 +450,11 @@ do not validate downstream GAM bindings or effects.
 
 ## Pending input and governed consequences
 
-A short yes/no while consent is open belongs to `handle_pending/3`; it does not
-need a global yes route. That handler may classify explicit choices or use
-ordinary functions. GAM's fixed ingress still interprets and authenticates the
-original response against the actual Presentation.
+A verified decision for a presentation can be submitted directly through
+`Spectre.Server.decide/4`. The default `handle_pending/3` also handles familiar
+text when the foreground wait belongs to that presentation. GAM checks the
+original answer and the exact Presentation. An Activity's ordinary question
+instead uses an input wait with its own revision and target.
 
 For a new topic, `route_current_input(ctx, suspend: pending.id)` routes the same
 prepared input without repeating the input pipeline. Add a durable closure

@@ -1,4 +1,4 @@
-# Declarative Agent DSL in 0.4
+# Declarative Agent DSL in 0.4.1
 
 Use DSL for declarations and ordinary Elixir for behavior. The Stack declares
 installed capabilities, the Agent declares recognition, and the Server contains
@@ -9,6 +9,7 @@ defmodule MyApp.SupportAgent do
   use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
 
   model MyApp.ResponseModel
+  embedding MyApp.Embeddings
   classifier :local, MyApp.LocalClassifier, artifact_dir: "priv/intents"
   classifier :llm, MyApp.IntentModel, timeout: 8_000
 
@@ -42,6 +43,7 @@ clause. The Server prompt root belongs in
 | `router strategies: [...]` | Select recognition strategies and arbitration options. |
 | `flow name, defaults: [...] do ... end` | Group routes and inherit common declaration options. |
 | `on label, opts` | Declare recognition and a Server dispatch destination. |
+| `expose :documents` | Expose the single reusable flow contributed by the installed `:documents` package. Use `expose flows: [{:documents, :search}]` to choose a specific scope. |
 | `skill Module, as: mount, governed: refs` | Mount reusable scoped routes and, when the Skill declares `server:`, its own Server process under the root's shared GAM. |
 
 The classifier may be another model or a host implementation. A named local
@@ -53,7 +55,7 @@ permission grants. A missing model/adapter is not replaced by an invented API.
 | Preferred option | Meaning |
 | --- | --- |
 | `regex:` | One expression or a list of expressions. |
-| `semantic_examples:` | Text examples used by embedding recognition. |
+| `semantic_examples:` | Text examples for embedding recognition and for the LLM classifier's descriptions of the available labels. |
 | `bag:`, `jaro:` | Examples for their string-similarity strategies. |
 | `collect_intent:` | Opt into eligible runtime example collection. |
 | `dataset_lookup:` | Explicitly allow/exclude this route from dataset recognition. |
@@ -79,6 +81,13 @@ ledger. No Skill GAM DSL, extra Host or ingress implementation is required.
 authority. Provenance identifies each Skill proposal, and consent targets the
 exact mount and presentation. Parallel work and timer closure remain subject to
 the shared kernel laws. See [Skills](SKILLS.md) for the complete example.
+
+Register background work with `activity :research, MyApp.Research` in the
+Stack. The second argument is a module using `Spectre.Activity`. Start it from
+a Server callback with `start_activity(ctx, :research, args)`.
+Installed Activity types use a scoped `{installation, type}` pair. Each
+start receives its own execution reference.
+[Activity guide](AGENT_SERVER.md#run-a-background-activity).
 
 ## Router ergonomics and retained aliases
 

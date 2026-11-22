@@ -19,6 +19,10 @@ defmodule Spectre.Stack.Installable do
   compatible with manual GAM bindings. Installing an execution adapter still
   requires the application to enable the operation under its declared authority.
 
+  Optional `c:integration/1` returns `Spectre.Integration` declarations for
+  services, tools, opt-in flows and on-demand Activities. It receives the same compiled
+  configuration as `c:tools/1` and `c:effects/1`.
+
   `c:child_specs/2`, when implemented, runs only when a caller explicitly starts
   `Spectre.Stack.Runtime`. The optional callback extends the existing version-1
   installable contract; packages without tools still install but provide no
@@ -26,6 +30,7 @@ defmodule Spectre.Stack.Installable do
   example and the adapter contract.
   """
 
+  alias Spectre.Integration
   alias Spectre.Stack.Effects
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Package
@@ -34,21 +39,33 @@ defmodule Spectre.Stack.Installable do
 
   @contract_version 1
 
+  @doc "Returns stable package identity, compatibility and capability declarations."
   @callback manifest() :: Package.t() | map() | keyword()
+
+  @doc "Compiles installation options and an optional quoted DSL block in the caller's environment."
   @callback compile(keyword(), Macro.t() | nil, Macro.Env.t()) ::
               {:ok, map() | keyword()} | {:error, term()}
+  @doc "Returns tool descriptors whose names become generated Server helpers."
   @callback tools(map() | keyword()) :: Tools.t()
+  @doc "Returns effect registrations for the host's managed GAM executor."
   @callback effects(map() | keyword()) :: Effects.t()
+  @doc "Returns service, tool, flow and Activity declarations using `Spectre.Integration`."
+  @callback integration(map() | keyword()) :: Integration.t()
+  @doc "Returns logical resource IDs and child specs for the explicitly started Stack runtime."
   @callback child_specs(Installation.t(), keyword()) ::
               [{term(), Supervisor.child_spec()}]
               | {:ok, [{term(), Supervisor.child_spec()}]}
               | {:error, term()}
 
-  @optional_callbacks compile: 3, child_specs: 2, tools: 1, effects: 1
+  @optional_callbacks compile: 3, child_specs: 2, tools: 1, effects: 1, integration: 1
 
   @doc """
   Defines a static manifest and default data-only compiler.
+
+  The default compiler returns the package options and accepts installations
+  without a block. Override `c:compile/3` for a package-specific DSL.
   """
+  @spec __using__(Macro.t()) :: Macro.t()
   defmacro __using__(manifest_opts) do
     quote bind_quoted: [manifest_opts: manifest_opts] do
       @behaviour Spectre.Stack.Installable
@@ -150,6 +167,22 @@ defmodule Spectre.Stack.Installable do
     else
       %{}
     end
+  end
+
+  @doc false
+  @spec integration!(module(), map() | keyword()) :: Integration.t() | nil
+  def integration!(module, config) do
+    if function_exported?(module, :integration, 1) do
+      case invoke(module, :integration, [config]) do
+        {:ok, integration} -> normalize_integration(integration)
+        {:error, reason} -> raise_compile_error(module, reason)
+      end
+    end
+  end
+
+  defp normalize_integration(integration) do
+    validated = Integration.validate!(integration)
+    if validated == Integration.new(), do: nil, else: validated
   end
 
   @doc false

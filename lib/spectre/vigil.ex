@@ -63,7 +63,8 @@ defmodule Spectre.Vigil do
     end
   end
 
-  @doc "Registers one observation or cognitive operation."
+  @doc "Registers an observation or cognitive operation using the `:executor` option."
+  @spec operation(Macro.t(), Macro.t()) :: Macro.t()
   defmacro operation(id, opts) do
     id = evaluate(id, __CALLER__)
     opts = evaluate(opts, __CALLER__)
@@ -71,6 +72,8 @@ defmodule Spectre.Vigil do
     register_operation(id, executor, Keyword.delete(opts, :executor), __CALLER__)
   end
 
+  @doc "Registers an observation or cognitive operation with an explicit executor and options."
+  @spec operation(Macro.t(), Macro.t(), Macro.t()) :: Macro.t()
   defmacro operation(id, executor, opts) do
     id = evaluate(id, __CALLER__)
     executor = evaluate(executor, __CALLER__)
@@ -79,6 +82,7 @@ defmodule Spectre.Vigil do
   end
 
   @doc "Allows one observation operation from the Agent application registry."
+  @spec uses_operation(Macro.t()) :: Macro.t()
   defmacro uses_operation(id) do
     id = evaluate(id, __CALLER__)
 

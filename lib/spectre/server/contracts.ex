@@ -14,6 +14,7 @@ defmodule Spectre.Server.Contracts do
   callbacks remain available. These checks do not prove arbitrary Elixir handler
   exhaustiveness or infer contracts from catch-all clauses.
   """
+  alias Spectre.Flow.Port, as: FlowPort
   alias Spectre.Server.{Command, ContractError}
 
   @type schema ::
@@ -156,7 +157,8 @@ defmodule Spectre.Server.Contracts do
           Map.get(pending, :on_result) != Map.get(pending, :id)
       )
 
-    if explicit, do: validate_tag!(server, Map.get(pending, :on_result))
+    owner = continuation_owner(server, Map.get(pending, :origin))
+    if explicit, do: validate_tag!(owner, Map.get(pending, :on_result))
   end
 
   @spec validate_retained_entry!(module(), map()) :: :ok
@@ -168,7 +170,8 @@ defmodule Spectre.Server.Contracts do
         not Map.has_key?(entry, :tool_origin) and Keyword.has_key?(opts, :on_result)
       )
 
-    if explicit, do: validate_tag!(server, Keyword.get(opts, :on_result)), else: :ok
+    owner = continuation_owner(server, Map.get(entry, :event))
+    if explicit, do: validate_tag!(owner, Keyword.get(opts, :on_result)), else: :ok
   end
 
   defp validate_retained_entry!(_server, _entry), do: :ok
@@ -184,8 +187,18 @@ defmodule Spectre.Server.Contracts do
         Map.get(worker, :kind) != :tool and Keyword.has_key?(opts, :on_result)
       )
 
-    if explicit, do: validate_tag!(server, Map.get(worker, :tag)), else: :ok
+    owner = continuation_owner(server, Map.get(worker, :event))
+    if explicit, do: validate_tag!(owner, Map.get(worker, :tag)), else: :ok
   end
+
+  defp continuation_owner(server, %{routing: %{route: route}}) do
+    case FlowPort.owner(route) do
+      {_, _, module} -> module
+      nil -> server
+    end
+  end
+
+  defp continuation_owner(server, _event), do: server
 
   @spec validate_tag!(module(), term()) :: :ok
   defp validate_tag!(server, tag),

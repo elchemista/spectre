@@ -93,6 +93,19 @@ Partial streaming text is never an executable plan. A public preview may be
 shown while supported generation is in progress, but no action is released
 before consolidation and admission.
 
+## Directive mission decisions
+
+A Directive Activity can ask its reasoning provider for a structured action
+such as `invoke` with a string tool alias and arguments. The host maps that
+alias to an installed tool. Cognitive tools return information. A governed
+binding stages a GAM proposal with the exact prepared material.
+
+Use `handle_invocation/3` in a custom Directive Activity to continue a fixed
+application step after a particular tool result. The current invocation includes
+the resolved binding, original arguments and plan version. Match the observed
+success before continuing. Return `:cont` to let Directive reason again.
+[Directive example and guide](EXAMPLES.md#open-chat-and-parallel-directive-missions).
+
 ## Consent belongs to the open intention
 
 ```elixir

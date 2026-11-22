@@ -16,6 +16,7 @@ defmodule Spectre.Router.Arbitrator do
       end
   """
 
+  @doc "Chooses a route, requests LLM arbitration, asks for clarification or returns an error."
   @callback decide(Spectre.Router.Arbitration.t(), keyword()) ::
               {:ok, Spectre.Route.t()}
               | {:llm, Spectre.Router.Arbitration.t()}

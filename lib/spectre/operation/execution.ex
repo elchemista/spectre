@@ -19,6 +19,11 @@ defmodule Spectre.Operation.Execution do
           metadata: map()
         }
 
+  @doc """
+  Wraps an executor value, validates it, and raises `ArgumentError` on invalid
+  data. Options are `:receipt`, `:usage`, `:artifacts`, and `:metadata`.
+  The artifacts option can be a single artifact or a list.
+  """
   @spec new(term(), keyword()) :: t()
   def new(value, opts \\ []) when is_list(opts) do
     execution = %__MODULE__{
@@ -32,10 +37,12 @@ defmodule Spectre.Operation.Execution do
     validate!(execution)
   end
 
+  @doc "Returns an existing execution envelope or wraps a plain executor value."
   @spec normalize(t() | term()) :: t()
   def normalize(%__MODULE__{} = execution), do: execution
   def normalize(value), do: new(value)
 
+  @doc "Checks that usage, artifacts, and metadata have the required shapes and verifies portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = execution) do
     cost =
@@ -67,6 +74,7 @@ defmodule Spectre.Operation.Execution do
     end
   end
 
+  @doc "Returns a valid execution envelope or raises `ArgumentError`."
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = execution) do
     case validate(execution) do

@@ -31,10 +31,17 @@ defmodule Spectre.Reply.Sanitizer do
 
   @type stream_state :: term()
 
+  @doc "Applies host-specific cleanup to a complete reply after core sanitization."
   @callback sanitize(String.t(), keyword()) :: String.t()
+
+  @doc "Initializes host-specific sanitizer state for one reply stream."
   @callback init_stream(keyword()) :: {:ok, stream_state()} | {:error, term()}
+
+  @doc "Returns visible text and updated state for a chunk accepted by the core sanitizer."
   @callback sanitize_chunk(String.t(), stream_state()) ::
               {:ok, String.t(), stream_state()} | {:error, term()}
+
+  @doc "Finalizes the stream and returns any remaining visible text."
   @callback finish_stream(stream_state()) :: {:ok, String.t()} | {:error, term()}
 
   @optional_callbacks init_stream: 1, sanitize_chunk: 2, finish_stream: 1

@@ -20,8 +20,11 @@ defmodule Spectre.Operation.Controller do
   @type context :: map()
 
   @callback __spectre_loop_definition__() :: Definition.t()
+
+  @doc "Initializes the loop's portable reducer state from its validated input and context."
   @callback init(term(), context()) :: {:ok, term()} | {:error, term()}
 
+  @doc "Chooses the next registered operation, wait, blocker, completion, or failure."
   @callback next(term(), context()) ::
               {:run, Request.t()}
               | {:run, atom() | String.t(), term()}
@@ -30,11 +33,13 @@ defmodule Spectre.Operation.Controller do
               | {:complete, term()}
               | {:error, term()}
 
+  @doc "Reduces a successful attempt into new state and optional transition data."
   @callback apply_result(term(), Request.t(), Result.t(), context()) ::
               {:ok, term()}
               | {:ok, term(), keyword() | map()}
               | {:error, term()}
 
+  @doc "Evaluates completion after a successful reduction. Return `:continue` or `false` to proceed."
   @callback complete(term(), context()) ::
               :continue
               | false
@@ -42,19 +47,23 @@ defmodule Spectre.Operation.Controller do
               | {:blocked, term()}
               | {:error, term()}
 
+  @doc "Applies an update to the current reducer state and effective input. Return both updated values."
   @callback apply_update(term(), term(), Spectre.Operation.Update.t(), context()) ::
               {:ok, term(), term()}
               | {:ok, term(), term(), keyword() | map()}
               | {:error, term()}
 
+  @doc "Reduces a trigger that wakes the loop into new state and optional transition data."
   @callback handle_trigger(term(), term(), context()) ::
               {:ok, term()} | {:ok, term(), keyword() | map()} | {:error, term()}
 
+  @doc "Customizes the terminal reason and metadata when `on_budget_exhausted: :controller` is configured."
   @callback budget_exhausted(term(), map(), context()) ::
               :terminate
               | {:terminate, term()}
               | {:terminate, term(), map() | keyword()}
 
+  @doc "Checks whether a stored checkpoint contract is compatible with the current contract."
   @callback checkpoint_compatible?(term(), term()) :: boolean()
 
   @optional_callbacks apply_update: 4,

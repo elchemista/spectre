@@ -13,6 +13,13 @@ it does not carry authority or establish that an effect occurred.
 | Memory engine/client | Named Stack runtime resource. |
 | Permission to save/disclose protected memory | Host governed operation and GAM facts, not a memory score. |
 
+To give open chat prior turns, carry a bounded selection into the generation
+through `assigns:` and render that selection in the prompt. The default
+generation command supplies the current input and application assigns.
+An Activity has separate assigns. Pass the relevant facts explicitly in the
+start arguments, or let it recall through a tool allowed by its scope.
+[Open-chat example](../README.md#open-chat-with-directive-missions).
+
 Mounted Skill Servers use the root's same automatic GAM Domain and authority
 ledger, while each keeps its own assigns, conversation, pending intentions and
 checkpoint. Sharing GAM does not automatically merge conversations or memory

@@ -37,6 +37,14 @@ defmodule Spectre.Operation.Update do
           metadata: map()
         }
 
+  @doc """
+  Builds a pending update with the supplied payload.
+
+  Set `:base_context_revision` to record the revision at which the update was
+  requested. Set `:id`, `:correlation_id`, `:causation_id`, `:provenance`,
+  `:requested_at`, and `:metadata` to attach routing and audit data. The
+  generated IDs are UUIDs and the default timestamp is in milliseconds.
+  """
   @spec new(term(), keyword()) :: t()
   def new(payload, opts \\ []) when is_list(opts) do
     %__MODULE__{
@@ -51,6 +59,7 @@ defmodule Spectre.Operation.Update do
     }
   end
 
+  @doc "Records the applied revision, timestamp, and optional invalidations on a pending update."
   @spec applied(t(), non_neg_integer(), [term()]) :: t()
   def applied(%__MODULE__{} = update, revision, invalidations \\ []) do
     %{
@@ -62,6 +71,7 @@ defmodule Spectre.Operation.Update do
     }
   end
 
+  @doc "Marks a pending update as rejected and records the reason in its metadata."
   @spec rejected(t(), term()) :: t()
   def rejected(%__MODULE__{} = update, reason) do
     %{
@@ -72,6 +82,7 @@ defmodule Spectre.Operation.Update do
     }
   end
 
+  @doc "Checks identity, timestamps, revision, and field constraints for the update's status and verifies portability."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = update) do
     cond do

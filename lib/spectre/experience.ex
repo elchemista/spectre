@@ -7,7 +7,9 @@ defmodule Spectre.Experience do
   authority, completes a continuation, or replaces the Journal.
   """
 
+  alias Spectre.Definition.Ref, as: DefinitionRef
   alias Spectre.Experience.Evidence
+  alias Spectre.Experience.Evidence.Ref
   alias Spectre.Experience.Redactor
   alias Spectre.Experience.Store
   alias Spectre.Governance.Data
@@ -74,15 +76,23 @@ defmodule Spectre.Experience do
     do: {:error, {:invalid_experience_record, shape(attrs), shape(opts)}}
 
   @doc "Fetches verified evidence by Ref."
+  @spec fetch(Store.config(), Ref.t() | String.t()) ::
+          :not_found | {:ok, Evidence.t()} | {:error, term()}
   defdelegate fetch(store, ref), to: Store
 
   @doc "Lists verified evidence for one Definition."
+  @spec list(Store.config(), DefinitionRef.t() | String.t(), keyword()) ::
+          {:ok, [Evidence.t()]} | {:error, term()}
   defdelegate list(store, definition_ref, opts \\ []), to: Store, as: :list_evidence
 
   @doc "Returns the exact evidence snapshot used by Reflection and Forge."
+  @spec snapshot(Store.config(), DefinitionRef.t() | String.t(), keyword()) ::
+          {:ok, Store.snapshot()} | {:error, term()}
   defdelegate snapshot(store, definition_ref, opts \\ []), to: Store
 
   @doc "Purges expired non-retained evidence after explicit confirmation."
+  @spec purge_expired(Store.config(), non_neg_integer(), keyword()) ::
+          {:ok, [String.t()]} | {:error, term()}
   defdelegate purge_expired(store, now, opts \\ []), to: Store
 
   defp value(attrs, key, default),

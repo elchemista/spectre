@@ -19,6 +19,7 @@ defmodule Spectre.Inference.Usage do
           output_bytes: non_neg_integer()
         }
 
+  @doc "Normalizes non-negative counters from a struct, map or keyword list. Missing counters default to zero."
   @spec new(t() | map() | keyword() | nil) :: t()
   def new(nil), do: %__MODULE__{}
   def new(%__MODULE__{} = usage), do: validate!(usage)
@@ -29,7 +30,8 @@ defmodule Spectre.Inference.Usage do
     attrs |> Map.take(@fields) |> then(&struct(__MODULE__, &1)) |> validate!()
   end
 
-  @spec merge(t(), t() | map() | keyword()) :: t()
+  @doc "Merges cumulative updates by keeping the greater value of each counter."
+  @spec merge(t(), t() | map() | keyword() | nil) :: t()
   def merge(%__MODULE__{} = current, update) do
     update = new(update)
 
@@ -38,7 +40,8 @@ defmodule Spectre.Inference.Usage do
     end)
   end
 
-  @spec add(t(), t() | map() | keyword()) :: t()
+  @doc "Adds the counters from a separate usage contribution."
+  @spec add(t(), t() | map() | keyword() | nil) :: t()
   def add(%__MODULE__{} = left, right) do
     right = new(right)
 
@@ -47,6 +50,7 @@ defmodule Spectre.Inference.Usage do
     end)
   end
 
+  @doc "Returns all usage counters as a plain map."
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = usage), do: Map.from_struct(usage)
 

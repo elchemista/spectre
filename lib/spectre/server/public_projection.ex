@@ -9,10 +9,20 @@ defmodule Spectre.Server.PublicProjection do
   the terminal public result. Raw provider output remains separate for final
   plan consolidation. This port never executes a proposal.
   """
+  @type config :: module() | {module(), keyword()} | nil
+  @type session :: {module(), term()} | nil
+
+  @doc "Creates projection state using the configured adapter options."
   @callback init(keyword()) :: {:ok, term()} | {:error, term()}
+
+  @doc "Consumes structurally sanitized text and returns the public text and updated projection state."
   @callback push(binary(), term()) :: {:ok, binary(), term()} | {:error, term()}
+
+  @doc "Flushes any remaining public text when the stream ends. Return an empty string if there is none."
   @callback finish(term()) :: {:ok, binary()} | {:error, term()}
 
+  @doc "Opens the configured projection adapter, or returns `{:ok, nil}` when disabled."
+  @spec open(config()) :: {:ok, session()} | {:error, term()}
   def open(nil), do: {:ok, nil}
   def open(module) when is_atom(module), do: open({module, []})
 
@@ -33,6 +43,8 @@ defmodule Spectre.Server.PublicProjection do
 
   def open(_), do: {:error, :invalid_public_projection}
 
+  @doc "Projects a text fragment and validates the returned UTF-8. A disabled session passes the text through."
+  @spec push(session(), String.t()) :: {:ok, String.t(), session()} | {:error, term()}
   def push(nil, text), do: {:ok, text, nil}
 
   def push({module, state}, text) do
@@ -50,6 +62,8 @@ defmodule Spectre.Server.PublicProjection do
     end
   end
 
+  @doc "Flushes final public text through the projection and validates its UTF-8."
+  @spec finish(session()) :: {:ok, String.t()} | {:error, term()}
   def finish(nil), do: {:ok, ""}
 
   def finish({module, state}) do

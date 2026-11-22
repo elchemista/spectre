@@ -46,10 +46,17 @@ defmodule Spectre.Definition.Store do
           required(:receipt) => receipt()
         }
 
+  @doc "Returns the portable logical identity of the configured artifact store."
   @callback identity(keyword()) :: term()
+
+  @doc "Declares whether published artifacts survive restart."
   @callback durability(keyword()) :: durability()
+
+  @doc "Reads the opaque canonical artifact bytes at the given key."
   @callback get(String.t(), keyword()) ::
               :not_found | {:ok, binary()} | {:error, term()}
+
+  @doc "Stores an artifact immutably. A retry with identical bytes can report `:existing`."
   @callback put(String.t(), binary(), keyword()) ::
               :ok | {:ok, :created | :existing} | {:error, term()}
 

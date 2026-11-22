@@ -19,8 +19,10 @@ defmodule Spectre.Router.Plug do
       end
   """
 
+  @doc "Prepares the plug's configured options."
   @callback init(keyword()) :: term()
 
+  @doc "Processes routing evidence using the prepared options and returns the next pipeline step."
   @callback call(Spectre.Router.Context.t(), term()) ::
               {:cont, Spectre.Router.Context.t()}
               | {:halt, Spectre.Router.Context.t()}

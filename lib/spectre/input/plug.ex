@@ -20,8 +20,10 @@ defmodule Spectre.Input.Plug do
       end
   """
 
+  @doc "Prepares the plug's configured options before input processing."
   @callback init(keyword()) :: term()
 
+  @doc "Processes normalized input using the runtime context and the value returned by `c:init/1`."
   @callback call(Spectre.Input.t(), map(), term()) ::
               {:cont, Spectre.Input.t()}
               | {:halt, Spectre.Input.t()}

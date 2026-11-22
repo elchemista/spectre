@@ -13,18 +13,28 @@ defmodule Spectre.Receipt.Sink do
   @type config :: module() | {module(), keyword()} | nil | false
   @type normalized :: nil | {module(), keyword()}
 
+  @doc "Appends a receipt once by ID and reports an unchanged retry as `:idempotent`."
   @callback append(Envelope.t(), keyword()) ::
               {:ok, :appended | :idempotent} | {:error, :ambiguous | term()}
+
+  @doc "Looks up the receipt envelope stored under the given receipt ID."
   @callback lookup(String.t(), keyword()) ::
               {:ok, Envelope.t()} | :not_found | {:error, term()}
+
+  @doc "Stages an envelope and returns its reference from `payload_ref/1`."
   @callback put_payload(Envelope.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+
+  @doc "Reads a staged envelope by its payload reference."
   @callback get_payload(String.t(), keyword()) ::
               {:ok, Envelope.t()} | :not_found | {:error, term()}
+
+  @doc "Deletes a staged envelope and reports whether the reference was present."
   @callback delete_payload(String.t(), keyword()) ::
               {:ok, :deleted | :not_found} | {:error, term()}
 
   @optional_callbacks put_payload: 2, get_payload: 2, delete_payload: 2
 
+  @doc "Normalizes a module or `{module, options}`. `nil` and `false` disable the sink."
   @spec normalize(config()) :: {:ok, normalized()} | {:error, term()}
   def normalize(value) when value in [nil, false], do: {:ok, nil}
 
@@ -41,6 +51,7 @@ defmodule Spectre.Receipt.Sink do
 
   def normalize(value), do: {:error, {:invalid_receipt_sink, value_class(value)}}
 
+  @doc "Appends a canonical envelope and classifies an interrupted write as ambiguous."
   @spec append(normalized(), Envelope.t(), keyword()) ::
           {:ok, :appended | :idempotent} | {:error, term()}
   def append(nil, _envelope, _opts), do: {:error, :receipt_sink_disabled}
@@ -57,6 +68,7 @@ defmodule Spectre.Receipt.Sink do
     _kind, _reason -> {:error, {:ambiguous, :receipt_append_failure}}
   end
 
+  @doc "Fetches and validates the receipt associated with the given ID."
   @spec lookup(normalized(), String.t(), keyword()) ::
           {:ok, Envelope.t()} | :not_found | {:error, term()}
   def lookup(nil, _id, _opts), do: :not_found
@@ -72,6 +84,7 @@ defmodule Spectre.Receipt.Sink do
     _kind, _reason -> {:error, {:receipt_sink_error, :receipt_lookup_failure}}
   end
 
+  @doc "Checks whether the sink implements both payload staging and retrieval."
   @spec payload_capable?(normalized()) :: boolean()
   def payload_capable?({module, _opts}) do
     Code.ensure_loaded?(module) and function_exported?(module, :put_payload, 2) and
@@ -80,6 +93,7 @@ defmodule Spectre.Receipt.Sink do
 
   def payload_capable?(_sink), do: false
 
+  @doc "Stages a canonical envelope and attempts a read-back if the write outcome is ambiguous."
   @spec put_payload(normalized(), Envelope.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def put_payload({module, sink_opts} = sink, %Envelope{} = envelope, opts) do
@@ -111,6 +125,7 @@ defmodule Spectre.Receipt.Sink do
 
   def put_payload(nil, _envelope, _opts), do: {:error, :receipt_sink_disabled}
 
+  @doc "Fetches a staged envelope and checks that it matches the requested payload reference."
   @spec get_payload(normalized(), String.t(), keyword()) ::
           {:ok, Envelope.t()} | :not_found | {:error, term()}
   def get_payload({module, sink_opts}, ref, opts) when is_binary(ref) and ref != "" do

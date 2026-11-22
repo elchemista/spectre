@@ -26,6 +26,8 @@ defmodule Spectre.Supervisor do
 
   @type session_option :: Spectre.Session.option()
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+
   @doc """
   Starts the dynamic supervisor for Spectre sessions.
 

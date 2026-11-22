@@ -6,6 +6,7 @@ defmodule Spectre.Stack.Definition do
   and capability collisions. They contain logical configuration only.
   """
 
+  alias Spectre.Integration
   alias Spectre.Stack.Installable
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Package
@@ -20,6 +21,7 @@ defmodule Spectre.Stack.Definition do
             version: @version,
             contract: 1,
             installations: [],
+            activities: %{},
             packages: %{},
             index: %{},
             digest: nil
@@ -33,6 +35,7 @@ defmodule Spectre.Stack.Definition do
           version: pos_integer(),
           contract: pos_integer(),
           installations: [Installation.t()],
+          activities: %{optional(atom()) => Integration.activity()},
           packages: %{optional(term()) => Package.t()},
           index: %{optional({capability_kind(), term()}) => Installation.t()},
           digest: String.t() | nil
@@ -48,11 +51,13 @@ defmodule Spectre.Stack.Definition do
     version = Map.get(attrs, :version, @version)
     contract = Map.get(attrs, :contract, Installable.contract_version())
     installations = Map.get(attrs, :installations, [])
+    activities = compile_activities!(Map.get(attrs, :activities, %{}))
 
     validate_header!(id, owner, version, contract, installations)
     installations = Enum.map(installations, &Installation.rebuild!/1)
     validate_unique_installations!(installations)
     Spectre.Stack.Tools.table!(installations)
+    validate_activity_requirements!(activities, installations)
     validate_compatibility!(installations)
 
     ordered = order_installations!(installations)
@@ -71,6 +76,7 @@ defmodule Spectre.Stack.Definition do
       version: version,
       contract: contract,
       installations: ordered,
+      activities: activities,
       packages: packages,
       index: index
     }
@@ -83,13 +89,16 @@ defmodule Spectre.Stack.Definition do
   """
   @spec validate(t()) :: {:ok, t()} | {:error, term()}
   def validate(%__MODULE__{} = definition) do
+    definition = Map.put_new(definition, :activities, %{})
+
     rebuilt =
       new!(%{
         id: definition.id,
         owner: definition.owner,
         version: definition.version,
         contract: definition.contract,
-        installations: definition.installations
+        installations: definition.installations,
+        activities: definition.activities
       })
 
     if rebuilt == definition,
@@ -168,6 +177,30 @@ defmodule Spectre.Stack.Definition do
     end
   end
 
+  @doc "Resolves a local Activity name or an installed `{installation, activity}` pair."
+  @spec activity(t() | module(), term()) :: {:ok, Integration.activity()} | {:error, term()}
+  def activity(stack, name) when is_atom(stack) and not is_nil(stack) do
+    with {:ok, definition} <- fetch(stack), do: activity(definition, name)
+  end
+
+  def activity(%__MODULE__{} = definition, {id, name} = type) do
+    with {:ok, installation} <- installation(definition, id),
+         %{activities: %{^name => binding}} <- installation.adapters[:integration] do
+      {:ok, binding}
+    else
+      _ -> {:error, {:unknown_stack_activity, type}}
+    end
+  end
+
+  def activity(%__MODULE__{} = definition, name) do
+    case Map.fetch(Map.get(definition, :activities, %{}), name) do
+      {:ok, binding} -> {:ok, binding}
+      :error -> {:error, {:unknown_stack_activity, name}}
+    end
+  end
+
+  def activity(_stack, name), do: {:error, {:unknown_stack_activity, name}}
+
   @doc """
   Resolves a closed logical capability to a fenced `Spectre.Stack.Ref`.
   """
@@ -198,6 +231,48 @@ defmodule Spectre.Stack.Definition do
       packages: Enum.map(definition.installations, & &1.package),
       installations: definition.installations
     }
+    |> include_activities(definition)
+  end
+
+  defp compile_activities!(activities) do
+    Enum.reduce(activities, %{}, fn {name, binding}, compiled ->
+      if Map.has_key?(compiled, name),
+        do: raise(ArgumentError, "duplicate local Stack Activity #{inspect(name)}")
+
+      Map.put(compiled, name, Integration.activity_binding!(name, binding))
+    end)
+  end
+
+  defp validate_activity_requirements!(activities, installations) do
+    installed =
+      for installation <- installations,
+          %Integration{activities: entries} <- [installation.adapters[:integration]],
+          {_name, binding} <- entries,
+          do: binding
+
+    required =
+      (installed ++ Map.values(activities))
+      |> Enum.flat_map(&Keyword.get(&1.options, :requires, []))
+      |> Enum.uniq()
+
+    if required != [] do
+      tools = Spectre.Stack.Tools.scoped_table!(installations)
+      unavailable = Enum.reject(required, &match?(%{}, tools[&1]))
+
+      if unavailable != [],
+        do:
+          raise(
+            ArgumentError,
+            "missing or ambiguous required Activity tools #{inspect(unavailable)}"
+          )
+    end
+  end
+
+  defp include_activities(data, definition) do
+    case Map.get(definition, :activities, %{}) do
+      activities when map_size(activities) == 0 -> data
+      activities -> Map.put(data, :activities, activities)
+    end
   end
 
   @spec validate_header!(term(), term(), term(), term(), term()) :: :ok
@@ -493,7 +568,8 @@ defmodule Spectre.Stack.Definition do
       owner: definition.owner,
       version: definition.version,
       contract: definition.contract,
-      installations: definition.installations
+      installations: Enum.map(definition.installations, &Installation.execution_projection/1)
     }
+    |> include_activities(definition)
   end
 end

@@ -84,6 +84,7 @@ defmodule Spectre.Operation.Registry do
     spec.kind == :function and spec.side_effect == :none and spec.output == :boolean
   end
 
+  @doc "Returns the loop's local and explicitly imported operation specs. Local definitions take precedence over imports."
   @spec all(module(), Definition.t()) :: {:ok, %{optional(term()) => Spec.t()}} | {:error, term()}
   def all(agent, %Definition{} = definition) when is_atom(agent) do
     with {:ok, agent_operations} <- agent_operations(agent),
@@ -92,6 +93,7 @@ defmodule Spectre.Operation.Registry do
     end
   end
 
+  @doc "Resolves an operation in the loop's closed catalog by exact ID or the string form of a registered atom ID."
   @spec resolve(module(), Definition.t(), term()) :: {:ok, Spec.t()} | {:error, term()}
   def resolve(agent, %Definition{} = definition, id) do
     with {:ok, operations} <- all(agent, definition) do

@@ -32,18 +32,53 @@ defmodule Spectre.Server.OutcomeDispatcher do
   alias Spectre.GAM.Canonical.Value
   alias Spectre.Server.Store.Disk
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+
+  @doc """
+  Starts a dispatcher with the required `:adapter` module and `:store` reference.
+
+  Set `:adapter_options` for the callbacks and `:store_module` to select a store
+  behaviour implementation. Use `:key` to give this dispatcher its own durable
+  namespace in a shared store and `:name` to register the process.
+
+  The poll `:interval` defaults to 1,000 milliseconds. `:worker_timeout` defaults
+  to 30,000 milliseconds and `:max_concurrency` to four workers. See the module
+  documentation for retry and retention options.
+  """
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
 
+  @doc "Persists a binding containing `:agent_ref`, `:tag` and `:recovery` for an operation ID. Repeating the same binding is safe."
+  @spec track(GenServer.server(), String.t(), map()) :: :ok | {:error, term()}
   def track(server, operation_id, binding),
     do: GenServer.call(server, {:track, operation_id, binding})
 
+  @doc "Checks for a newer durable result after the receiver has acknowledged the previous revision."
+  @spec refresh(GenServer.server(), String.t()) :: :ok | {:error, :unknown_operation}
   def refresh(server, operation_id), do: GenServer.call(server, {:refresh, operation_id})
+
+  @doc "Clears the retry limit and cooldown for this delivery, keeping its pinned result revision."
+  @spec retry(GenServer.server(), String.t()) :: :ok | {:error, :unknown_operation}
   def retry(server, operation_id), do: GenServer.call(server, {:retry, operation_id})
+
+  @doc "Removes tracking for one operation after the receiver acknowledges acquisition."
+  @spec forget(GenServer.server(), String.t()) ::
+          :ok | {:error, :unknown_operation | :operation_not_acquired}
   def forget(server, operation_id), do: GenServer.call(server, {:forget, operation_id})
 
+  @doc "Keeps the given number of acknowledged bindings in stable key order and returns the number removed."
+  @spec compact(GenServer.server(), non_neg_integer()) ::
+          {:ok, non_neg_integer()} | {:error, :invalid_retention_limit}
   def compact(server, keep_delivered \\ 1_000),
     do: GenServer.call(server, {:compact, keep_delivered})
 
+  @doc "Reads tracked entries, active worker count, retry metadata and sanitized last errors."
+  @spec status(GenServer.server()) :: %{
+          entries: map(),
+          workers: non_neg_integer(),
+          last_errors: map(),
+          retries: map()
+        }
   def status(server), do: GenServer.call(server, :status)
 
   @impl true

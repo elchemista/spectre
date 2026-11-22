@@ -111,6 +111,7 @@ defmodule Spectre.Router.Adapter do
           | {:skip, term()}
           | {:error, term()}
 
+  @doc "Returns scored evidence for rules in the request, skips evaluation, or returns a provider error."
   @callback evaluate(Request.t()) :: reply()
 
   @doc """
@@ -120,6 +121,7 @@ defmodule Spectre.Router.Adapter do
   generated descriptor is static and is snapshotted into every Agent that
   declares the module in its router `via`.
   """
+  @spec __using__(Macro.t()) :: Macro.t()
   defmacro __using__(opts) do
     descriptor = Compiler.descriptor_from_use!(opts, __CALLER__)
 
@@ -136,6 +138,7 @@ defmodule Spectre.Router.Adapter do
   end
 
   @doc false
+  @spec __before_compile__(Macro.Env.t()) :: Macro.t()
   defmacro __before_compile__(env) do
     unless Module.defines?(env.module, {:evaluate, 1}, :def) do
       raise ArgumentError,

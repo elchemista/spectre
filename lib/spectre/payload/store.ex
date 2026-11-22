@@ -29,7 +29,10 @@ defmodule Spectre.Payload.Store do
   @type payload_ref :: term()
   @type context :: map()
 
+  @doc "Stores the content and returns a resolvable portable reference. The context and configured options accompany the write."
   @callback put(term(), context(), keyword()) :: {:ok, payload_ref()} | {:error, term()}
+
+  @doc "Resolves content for an opaque reference using the supplied context and configured options."
   @callback fetch(payload_ref(), context(), keyword()) :: {:ok, term()} | {:error, term()}
 
   @doc "Validates adapter wiring; nil leaves external payload storage unconfigured."

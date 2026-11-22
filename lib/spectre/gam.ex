@@ -520,19 +520,32 @@ defmodule Spectre.GAM do
         opts
       )
       when Portable.is_non_empty_binary(presentation_ref) and is_list(opts) do
+    with {:ok, scope, candidate} <- show_candidate(scope, presentation_ref, candidate_attrs),
+         do: propose(scope, candidate, opts)
+  end
+
+  def show_presentation(_scope, _presentation_ref, _candidate_attrs, _opts),
+    do: {:error, :invalid_presentation_show}
+
+  @doc false
+  @spec show_activity_presentation(Scope.t(), String.t(), map() | keyword(), reference(), map()) ::
+          {:ok, ProposalResult.t()} | {:error, term()}
+  def show_activity_presentation(scope, presentation_ref, candidate_attrs, token, origin) do
+    with {:ok, scope, candidate} <- show_candidate(scope, presentation_ref, candidate_attrs),
+         do: Proposal.run_activity(scope, candidate, token, origin)
+  end
+
+  defp show_candidate(scope, presentation_ref, candidate_attrs) do
     with {:ok, scope, %Presentation{} = presentation} <-
            Access.scoped_read(scope, {:presentation, presentation_ref}),
          :ok <- presentation_scope(presentation, Scope.ref(scope)),
          {:ok, candidate} <-
            presentation_show_candidate(scope, presentation, candidate_attrs) do
-      propose(scope, candidate, opts)
+      {:ok, scope, candidate}
     else
       {:error, _reason} = error -> error
     end
   end
-
-  def show_presentation(_scope, _presentation_ref, _candidate_attrs, _opts),
-    do: {:error, :invalid_presentation_show}
 
   @doc "Records a late or independently obtained world Outcome for an Act in this Scope."
   @spec record_outcome(Scope.t(), Outcome.t() | map() | keyword(), keyword()) ::
@@ -602,6 +615,7 @@ defmodule Spectre.GAM do
   Rechecks Scope, seal, provenance and availability; no input is observed twice.
   Required context cannot be silently dropped to fit a smaller Mind window.
   """
+  @spec continue_turn(Scope.t(), Turn.t(), [String.t()]) :: {:ok, Turn.t()} | {:error, term()}
   def continue_turn(%Scope{} = scope, %Turn{} = turn, evidence_refs)
       when is_list(evidence_refs) do
     with {:ok, scope} <- Access.rebind_scope(scope) do
@@ -617,6 +631,8 @@ defmodule Spectre.GAM do
   def continue_turn(_scope, _turn, _refs), do: {:error, :invalid_turn_continuation}
 
   @doc "Refreshes available durable result facts without calling an executor again."
+  @spec recover_proposal(Scope.t(), ProposalResult.t()) ::
+          {:ok, ProposalResult.t()} | {:error, term()}
   def recover_proposal(%Scope{} = scope, %Spectre.GAM.Proposal.Result{} = proposal) do
     primary = proposal.primary
 
@@ -642,6 +658,14 @@ defmodule Spectre.GAM do
   def surface(_scope), do: {:error, :invalid_scope}
 
   @doc "Reads durable dispatch facts for one scoped Act, never inferring cancellation from a missing Attempt."
+  @spec dispatch_status(Scope.t(), String.t()) ::
+          {:ok,
+           %{
+             mode: Spectre.GAM.GovernedAct.Execution.mode(),
+             terminal: Spectre.GAM.GovernedAct.DispatchState.terminal() | nil,
+             pending?: boolean()
+           }}
+          | {:error, term()}
   def dispatch_status(%Scope{} = scope, act_ref) when is_binary(act_ref) do
     with {:ok, _scope, status} <- Access.scoped_read(scope, {:dispatch_status, act_ref}),
          do: {:ok, status}

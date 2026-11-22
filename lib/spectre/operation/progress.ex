@@ -45,6 +45,7 @@ defmodule Spectre.Operation.Progress do
           metadata: map()
         }
 
+  @doc "Checks identity, fencing fields, sequence number, timestamp, and portability for one progress update."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = progress) do
     cond do

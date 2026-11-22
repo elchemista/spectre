@@ -27,6 +27,11 @@ and `stream_adapter_opts: [...]`. `MyApp.StreamAdapter` is a host implementation
 not a built-in remote provider. Missing capability produces an error; a
 synchronous completion is not disguised as a live stream.
 
+`:explain` locates the prompt under the Server's prompt root. `stream: true`
+uses the configured streaming adapter. `on_result: :explained` selects this
+application callback tag for the consolidated result. The final `super/3`
+preserves standard handling for errors and other results.
+
 Start the Server with a `consumer:` to receive correlated preview envelopes:
 
 ```elixir
@@ -49,7 +54,9 @@ Preview completion means generation finished, not that a proposed action ran.
 
 The stream worker validates provider events and accumulates the generation.
 Sanitization and optional public projection determine what may appear in the
-preview lane. `preview:` accepts `:auto`, `:off` and `:required`.
+preview lane. `preview: :auto` emits a preview when public projection is
+available. `:off` suppresses previews. `:required` rejects a generation whose
+configuration cannot safely provide a preview.
 
 When `planning: true` is requested, previews require an appropriate incremental
 `public_projection`; otherwise `:auto` buffers the plan and `:required` rejects

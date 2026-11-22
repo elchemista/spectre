@@ -18,12 +18,15 @@ defmodule Spectre.Classifier.Embedding do
 
   @type vector :: [float()]
 
+  @doc "Loads the requested model or initializes access to it and reports its vector size."
   @callback load(model :: String.t(), opts :: keyword()) ::
               {:ok, pos_integer()} | {:error, term()}
 
+  @doc "Embeds the supplied text as a vector of the dimension reported by `c:load/2`."
   @callback embed(text :: String.t(), opts :: keyword()) ::
               {:ok, vector()} | {:error, term()}
 
+  @doc "Optionally prepares a model artifact for later use and reports its vector size."
   @callback download(model :: String.t(), opts :: keyword()) ::
               {:ok, pos_integer()} | {:error, term()}
 

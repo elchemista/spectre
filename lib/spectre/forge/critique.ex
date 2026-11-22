@@ -124,6 +124,7 @@ defmodule Spectre.Forge.Critique do
   end
 
   @doc "Restores a critique from decoded transport data."
+  @spec from_data(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
   def from_data(data), do: new(data)
 
   @doc "Returns the exact proposed evaluation-case digest, if present."

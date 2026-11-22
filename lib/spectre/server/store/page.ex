@@ -7,8 +7,18 @@ defmodule Spectre.Server.Store.Page do
   A cursor is bound to its prefix. Pages are live views, not snapshot isolation.
   """
   alias Spectre.GAM.Canonical.Value
+  alias Spectre.Server.Store
 
-  @doc "Returns a stable binary ordering key; tuple components support prefix lookup."
+  @type cursor :: {:store_page, 1, binary(), binary()}
+  @type options :: %{
+          prefix: binary(),
+          after: binary() | nil,
+          limit: pos_integer(),
+          max_bytes: pos_integer()
+        }
+
+  @doc "Returns a stable binary ordering key. Tuple components support prefix lookup."
+  @spec key(term()) :: binary()
   def key(key) when is_tuple(key), do: <<1>> <> components(Tuple.to_list(key))
   def key(key), do: <<0>> <> components([key])
 
@@ -26,7 +36,8 @@ defmodule Spectre.Server.Store.Page do
   @doc false
   def delete(index, key), do: :gb_trees.delete_any(key(key), index)
 
-  @doc "Validates a bounded page and its namespace-bound cursor."
+  @doc "Validates tuple prefix, `:after` cursor, entry `:limit` and `:max_bytes` for a page."
+  @spec options(tuple(), keyword()) :: {:ok, options()} | {:error, :invalid_store_page}
   def options(prefix, opts) when is_tuple(prefix) and is_list(opts) do
     with true <- Keyword.keyword?(opts),
          true <- length(Keyword.keys(opts)) == length(Enum.uniq(Keyword.keys(opts))),
@@ -59,6 +70,7 @@ defmodule Spectre.Server.Store.Page do
   def cursor(page, last), do: {:store_page, 1, page.prefix, last}
 
   @doc "Exclusive bytea range end for one encoded tuple prefix."
+  @spec upper_bound(binary()) :: binary() | nil
   def upper_bound(prefix), do: increment(prefix)
   defp increment(<<>>), do: nil
 
@@ -73,6 +85,9 @@ defmodule Spectre.Server.Store.Page do
     do: is_binary(key) and :binary.longest_common_prefix([key, prefix]) == byte_size(prefix)
 
   @doc "Reads a page from an ordered key index, fetching only the selected values."
+  @spec read(:gb_trees.tree(binary(), term()), (term() -> Store.entry()), tuple(), keyword()) ::
+          {:ok, [{term(), Store.entry()}], cursor() | nil}
+          | {:error, :invalid_store_page | :store_page_entry_too_large}
   def read(index, fetch, prefix, opts) do
     with {:ok, page} <- options(prefix, opts) do
       iterator = :gb_trees.iterator_from(page.after || page.prefix, index)

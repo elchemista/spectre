@@ -10,16 +10,22 @@ defmodule Spectre.Server.Registry do
   alias Spectre.AgentRef
   alias Spectre.Subject
 
+  @type key :: {String.t(), String.t()}
+
   @doc "Returns the stable Agent/Subject ownership key, independent of code version."
+  @spec key(module() | AgentRef.t(), term()) :: key()
   def key(agent, subject) do
     {agent |> AgentRef.new() |> AgentRef.key(), subject |> Subject.new() |> Subject.key()}
   end
 
   @doc "Returns the canonical OTP name for the subject-scoped Server."
+  @spec via(module() | AgentRef.t(), term(), atom()) :: {:via, Registry, {atom(), key()}}
   def via(agent, subject, registry \\ __MODULE__),
     do: {:via, Registry, {registry, key(agent, subject)}}
 
   @doc "Looks up the live local owner without starting a conversation."
+  @spec lookup(module() | AgentRef.t(), term(), atom()) ::
+          {:ok, pid()} | {:error, :server_not_found | :server_registry_unavailable}
   def lookup(agent, subject, registry \\ __MODULE__),
     do: lookup_key(registry, key(agent, subject))
 
@@ -36,7 +42,15 @@ defmodule Spectre.Server.Registry do
     if Process.alive?(pid), do: {:ok, pid}, else: {:error, :server_not_found}
   end
 
-  @doc "Starts or returns the unique supervised Server for an Agent and Subject."
+  @doc """
+  Starts or returns the unique supervised Server for an Agent and Subject.
+
+  `supervisor` is the running DynamicSupervisor. Additional options are passed
+  to `Spectre.Server.start_link/1`. Set `:server_registry` to use a custom
+  local Registry. An explicit `:name` must match `via/3` for the same owner.
+  """
+  @spec ensure_started(Supervisor.supervisor(), module(), term(), keyword()) ::
+          {:ok, pid()} | {:error, term()}
   def ensure_started(supervisor, agent, subject, opts \\ []) do
     registry = Keyword.get(opts, :server_registry, __MODULE__)
     subject = Subject.new(subject)

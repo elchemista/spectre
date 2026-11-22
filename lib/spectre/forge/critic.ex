@@ -16,9 +16,16 @@ defmodule Spectre.Forge.Critic do
 
   @max_critics 16
 
+  @doc "Returns the stable, non-empty critic ID used for attribution."
   @callback id() :: String.t()
+
+  @doc "Returns the positive version of the critic implementation."
   @callback version() :: pos_integer()
+
+  @doc "Returns the non-empty reference for the critic's configured model or evaluation profile."
   @callback profile_ref() :: String.t()
+
+  @doc "Evaluates a portable Reflection and redacted Experience snapshot using the critic options."
   @callback critique(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
 
   @doc "Returns the compiled critic adapter contract version."

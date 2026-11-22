@@ -19,6 +19,7 @@ defmodule Spectre.GAM.Payload.Store do
   @type ref :: String.t()
   @type config :: module() | {module(), keyword()}
 
+  @doc "Checks that the referenced payload exists and matches the digest in its reference."
   @callback verify(ref(), keyword()) :: :ok | {:error, :not_found | term()}
 
   @doc "Checks the host adapter configuration and callback; does not contact payload storage."

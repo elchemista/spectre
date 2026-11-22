@@ -1,8 +1,8 @@
 # Getting started
 
 Start with a deterministic conversation, then add the capabilities your application
-needs. The [README example](../README.md#build-an-agent) shows regex, semantic
-matching and model classification;
+needs. Follow the [deterministic README example](../README.md#build-a-deterministic-agent)
+or [open chat with Directive](../README.md#open-chat-with-directive-missions).
 [Installation](INSTALLATION.md) covers dependencies and supervision.
 
 An empty Stack is optional. The generator and the model-free example below use only Agent and Server. When you want to call your own billing library, follow [the Stack integration walkthrough](CUSTOM_STACK_TOOLS.md).
@@ -70,8 +70,8 @@ Context as state. [Server callbacks](SERVER_CALLBACKS.md) lists each trigger, ar
 
 ## Choose how the Agent recognizes input
 
-`router strategies: [...]` selects recognition sources. The README combines
-`:regex`, `:embedding` and `:llm_classifier` with application-owned adapters.
+`router strategies: [...]` selects recognition sources. The README shows how
+to combine `:regex`, `:embedding` and `:llm_classifier` with host adapters.
 For a model-free start, choose `[:regex, :bag, :jaro]` as in the executable
 quickstart. Add `:intent_dataset` for reviewed examples or `:local_classifier`
 for a configured local classifier.
@@ -82,9 +82,11 @@ then covers each strategy and its requirements. To provide your own implementati
 
 ## Add a model or installed tool
 
-Install packages in a `Spectre.Stack`, bind it to the Agent and select
-`tools: MyApp.AI` in the Server. Packages supply generated helpers such as `lens`
-and `kinetic`; adapters and credentials belong to the host's runtime resources.
+Install packages in a `Spectre.Stack` and bind it to the Agent. Use
+`call_tool(ctx, {installation, operation}, args)` to call a scoped binding.
+Select `tools: MyApp.AI` in the Server for generated helpers such as `lens`
+and `kinetic`. The example below calls the Server's model command. It works
+with either a model declared directly on the Agent or a Stack inference provider.
 
 A helper queues a command and names its continuation:
 
@@ -99,10 +101,26 @@ def handle_result(:answered, {:generated, response}, ctx),
 def handle_result(tag, result, ctx), do: super(tag, result, ctx)
 ```
 
+`:answer` names a prompt asset such as `answer.text.heex` under the Server's
+`prompt_root:`. `input:` supplies its normalized input explicitly. `:answered`
+is the result tag chosen by the application. The generated result contains
+`response.text`. `super/3` keeps the defaults for results that do not match
+the generated shape, including failures.
+
 Recognition can combine regex, reviewed intent examples, embeddings, local
 classifiers and LLM classification. Configure only the adapters you use; the
 response model and classifier can differ. See [Routing](ROUTING.md),
 [Training](TRAINING.md) and [Stack tools](STACK_TOOLS.md).
+
+## Start a mission while chat continues
+
+Install Directive in the Stack, recognize a mission route and have its Server
+callback return `start_activity(ctx, {:directive, :mission}, %{goal: input.text})`.
+Ordinary messages can take a chat route or generate from `:unmatched`.
+Use the mission's reference to read its status, revise it or cancel it.
+Replies to mission questions include both the Activity reference and its wait
+reference. [Open-chat example](../README.md#open-chat-with-directive-missions),
+[Activity options and lifecycle](AGENT_SERVER.md#run-a-background-activity).
 
 ## Add an operation that needs consent
 
@@ -116,7 +134,7 @@ agent, follow [External approval](EXTERNAL_APPROVALS.md); Pulse is optional.
 
 ## Continue with a complete workflow
 
-The [outreach source](https://github.com/elchemista/spectre/blob/0.4.0/docs/examples/outreach_agent.exs)
+The [outreach example](EXAMPLES.md#browse-remember-prepare-email-and-ask-permission-to-save)
 shows website inspection, contact extraction, model drafting, typed Kinetic
 proposals and email confirmation. It requires the named application adapters;
 [the executable Stack integration](https://github.com/elchemista/spectre_ecosystem/tree/main/integration/stack_tools)

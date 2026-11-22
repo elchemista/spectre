@@ -49,8 +49,13 @@ defmodule Spectre.GAM.Domain.Recovery.Policy do
           last_verified: head() | nil
         }
 
+  @doc "Checks whether the host accepts the verified Domain head or a new bootstrap."
   @callback check(context(), keyword()) :: :ok | {:error, term()}
+
+  @doc "Receives a startup or runtime incident for application-owned handling."
   @callback failed(incident(), keyword()) :: term()
+
+  @doc "Chooses whether Managed GAM waits, retries verification or opens a fresh RAM Domain."
   @callback recover(incident(), keyword()) :: :wait | :memory | {:retry, non_neg_integer()}
   @optional_callbacks failed: 2, recover: 2
 

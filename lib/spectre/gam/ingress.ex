@@ -43,9 +43,11 @@ defmodule Spectre.GAM.Ingress do
   @doc "Returns this adapter's stable identity within SubmissionContext records."
   @callback ref() :: String.t()
 
+  @doc "Authenticates an input for the named Domain and Scope at the supplied time."
   @callback authenticate(String.t(), String.t(), term(), non_neg_integer(), keyword()) ::
               {:ok, SubmissionContext.t()} | {:error, term()}
 
+  @doc "Turns input into one or more observations bound to its authenticated context."
   @callback observe(SubmissionContext.t(), term(), integer(), keyword()) ::
               {:ok, Evidence.t() | [Evidence.t()]} | {:error, term()}
 

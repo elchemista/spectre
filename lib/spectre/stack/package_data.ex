@@ -20,7 +20,10 @@ defmodule Spectre.Stack.PackageData do
           required(:adapters) => [map()]
         }
 
+  @doc "Checks erasure readiness for the given Instance without changing package data."
   @callback erasure_plan(Ref.t(), keyword()) :: {:ok, map()} | {:error, term()}
+
+  @doc "Erases the installed package's data for the given Instance. Report an already erased Instance with `{:ok, :already_erased}`."
   @callback erase_instance(Ref.t(), keyword()) :: {:ok, term()} | {:error, term()}
 
   @doc "Builds a read-only capability component for installed package data."

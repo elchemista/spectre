@@ -1,26 +1,27 @@
-# Architecture: Stack, Agent, Server and GAM
+# Stack, Agent, Server and GAM
 
-Spectre 0.4 preserves the recognition and extension capabilities of 0.3 while
-separating declarations, conversational ownership and authority. This is the
-AgentServer architecture. The [Instance architecture](https://github.com/elchemista/spectre/blob/0.4.0/docs/legacy/ARCHITECTURE_0_3.md)
-remains a compatibility path, not a description of the new owner.
+Spectre's AgentServer separates capability declarations, conversation and
+authority. One Root coordinates the conversation. It can run reusable Skill
+mounts and start independent Activities under the same Managed GAM Domain.
 
 ## Responsibilities
 
-| Layer | Owns | Does not establish |
-| --- | --- | --- |
-| `Spectre.Stack` | Installed packages, immutable tool descriptors, provider bindings, resource declarations | Business permission to execute a proposed effect |
-| `Spectre.Agent` | Classifiers, router strategies, flow/intent metadata, dataset collection settings | Mutable conversation state or execution of route bodies |
-| `Spectre.Skill` | Reusable scoped routes and an optional Server binding; mount-local allowed operations | A separate mandate or automatically granted authority |
-| Application `Spectre.Server` module | `handle_flow`, `handle_result`, `handle_pending`, ordinary OTP callbacks | Independent ownership outside the runtime process |
-| `Spectre.Server.Runtime` | One GenServer owner, context, command outbox, workers, streaming, pending intentions, checkpoints and automatic GAM integration | Authority inferred from a model label or arbitrary “yes” |
-| `Spectre.GAM` kernel | Scoped observations, admission, recorded Acts, attempts/outcomes, consent evidence and unresolved duties | Proof that an external effect succeeded just because it was admitted |
-| Host application | Authenticated identity, allowed operations, business policy, registered effect adapters, storage and independent real-world review | Automatic safety for arbitrary direct I/O in application callbacks |
+| Layer | What it owns |
+| --- | --- |
+| `Spectre.Stack` | Installed packages, immutable tool and provider bindings, reusable Flow definitions, Activity types and resource declarations. |
+| `Spectre.Agent` | Router strategies, selectable flows, classifiers and dataset settings. An Agent without installed capabilities can omit its Stack. |
+| `Spectre.Flow.Port` | Reusable, exposed routes and their result callbacks. A Flow runs inside the conversation owner. |
+| `Spectre.Skill` | Reusable scoped routes and an optional mounted Server with its own state. |
+| Application `Spectre.Server` module | Conversation and OTP callback implementations. The provided Context carries state and requested commands. |
+| `Spectre.Server.Runtime` | OTP owner, command outbox, workers, streams, pending intentions and checkpoints. |
+| `Spectre.Activity` | One startable execution with local state, callbacks, tool scope and revision. |
+| `Spectre.GAM` kernel | Scoped observations, admission, recorded Acts, attempts, outcomes, evidence and unresolved duties. |
+| Host application | Authenticated identity, allowed operations, policy, registered effect adapters, storage and independent real-world review. |
 
-Stack resources are supervised separately; that does not create a second owner
-of the conversation. Your Server module is a behaviour implementation delegated
-to by the runtime in the same process. It can use `handle_info` and other OTP
-callbacks without taking over framework message dispatch.
+Stack resources run under their own supervisor when the application starts a
+Stack runtime. The Server behaviour runs inside the Runtime process and receives
+application messages through ordinary OTP callbacks. The Runtime handles its
+workers and timers before delegating these callbacks.
 
 ## Agent and Skill process tree
 
@@ -50,16 +51,38 @@ See [Skills](SKILLS.md) for delegation, native OTP callbacks, recorded provenanc
 uncertain dispatch recovery and the cancellation contract, or the
 [LiveView showcase](DEMO.md) to exercise this tree interactively.
 
+## Activities and the Root
+
+```text
+Root Server → router, conversation and Activity lifecycle callbacks
+    │
+    ├─ exposed Flow → callbacks in the current owner
+    ├─ Skill Server → mounted runtime with its own state when configured
+    └─ start_activity → supervised Activity with a stable ref and revision
+
+Root, Skill Servers and Activities → one Managed GAM Domain
+```
+
+The Activity coordinator starts and monitors requested executions. A basic chat
+turn can use the Root alone. A long-running report or a Directive mission can
+continue while the Root talks to the user. The Activity gets its own Context
+and lifecycle. The Root or the host can inspect it by reference, pass
+new information or cancel it. A failure is reported as a lifecycle event.
+[Start a background Activity](AGENT_SERVER.md#run-a-background-activity).
+
 ## Input and execution loop
 
 ![Architecture: Stack, Agent, Server and GAM: Input and execution loop](assets/architecture-2.svg)
 
 [Diagram source](assets/architecture-2.mmd).
 
-A foreground pending input is checked before ordinary routing. Changing topics
-can suspend it and route the current input. Background actor waits do not
-capture the next user message. An unresolved router result reaches
-`handle_flow(:unmatched, input, ctx)` with its reason in `ctx.routing`.
+Input preparation and interrupts precede ordinary routing. A targeted answer
+can go to the exact Flow or Activity wait. The Runtime also checks the current
+foreground wait and a focused Activity matcher. The Root processes other
+messages through pre-route handlers and the Router. An unresolved route reaches
+`handle_flow(:unmatched, input, ctx)` with its reason in `ctx.routing`, where
+the Root can generate a chat response or classify the next step.
+[Dispatch order and callbacks](SERVER_CALLBACKS.md#when-each-callback-runs).
 
 Helpers append commands to the context. The runtime validates portable state
 and command contracts before acquisition; workers receive a service projection,
@@ -84,17 +107,15 @@ its output might propose. See [GAM](GAM.md).
 
 ## Installed tools share the loop
 
-An installable package may declare `tools/1`. The Server compiler generates
-helpers from the chosen Stack's closed descriptors. These helpers are not
-functions exported by the satellite package. Runtime adapters normalize requests
-and resolve named Stack resources; `ctx` contains no hidden initialized Kinetic
-client. Cognitive operations return results, while governed operations normalize
-to proposals before acquisition and follow the same GAM boundary as `propose`.
-
-Kinetic interprets consolidated model AL into proposals. Mnemonic can recall
-and propose bound writes. Lens observes pages and can propose bound actions.
-Directive reduces portable state instead of running a second hidden loop.
-See the complete [tool contract and package matrix](STACK_TOOLS.md).
+Installable packages can declare an `integration/1` with tool, service, Flow
+and Activity bindings. `call_tool(ctx, {installation, operation}, args)` uses
+the Agent's compiled Stack to find the adapter and routes the result to the
+caller. Packages can also provide `tools/1` descriptors or request helper
+aliases. A module using `use Spectre.Server, tools: MyApp.Stack` then gets
+private command helpers such as `kinetic/3`. The adapter resolves named
+resources when it needs them. Cognitive operations return projected values.
+Governed operations build proposals and pass through GAM before execution.
+[Stack extensions](STACK.md) · [Installed tool contracts](STACK_TOOLS.md).
 
 ## Streaming, pending state and recovery
 

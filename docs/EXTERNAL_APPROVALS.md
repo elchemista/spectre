@@ -11,13 +11,14 @@ response supplies consent Evidence for one frozen Presentation and show Act.
 
 [Diagram source](assets/external-approvals-1.mmd).
 
-The personal agent carries the request; its authenticated human consumer makes
-the decision. The customer's Domain keeps execution authority. Each AgentServer
-has its own Domain, and the transport can be a local adapter or Pulse.
+The personal agent carries the request and its human consumer makes the
+decision. The customer's Domain keeps execution authority. Each AgentServer
+has its own Domain. This protocol works over a local adapter or application
+transport. Pulse is an optional network adapter.
 
 ## Run two agents without Pulse
 
-From the core checkout, run:
+Run the example from the Core checkout.
 
 ```sh
 mix run docs/examples/external_approval.exs
@@ -55,9 +56,22 @@ private key. Preserve keys and absolute expiry across durable restarts.
 
 The owner's authenticated `consumer:` receives
 `{Spectre.Server, personal_server, {:approval_request, request}}`. Render the
-literal `request["rendered_payload"]`, with the requester and expiry visible,
-then call `approval_presented/2`. An explicit human choice for that exact request
-calls `approval_decide/3`. The model must never trigger those UI calls.
+literal `request["rendered_payload"]` with the requester and expiry visible.
+Retain the request's ID and sender so subsequent UI events address that request.
+
+```elixir
+reference = %{id: request["id"], from: request["from"]}
+:ok = Spectre.Server.approval_presented(personal_server, reference)
+# Later, from the authenticated human's Confirm or Reject event.
+:ok = Spectre.Server.approval_decide(personal_server, reference, choice)
+```
+
+`personal_server` is the approver's AgentServer. `choice` is `:confirm` or
+`:reject`, obtained from the person's explicit decision. These calls belong
+to the authenticated application UI. The original requesting agent's
+Presentation, revision, binding digests and expiry remain part of the
+signed response. An ordinary `await_input/3` reply from the chat follows
+the conversation path. [Waits and consent](MANAGED_GAM.md#consent-from-an-activity).
 
 Use an operation-specific `message:` explaining the consequence. The standard
 renderer includes the operation name, frozen arguments and bound context.
@@ -79,9 +93,12 @@ for show completion. Execution still uses the customer's Scope and Mandate.
 Expired, conflicting, forged and consumed responses cannot authorize it.
 
 Requests and exact signed replies reuse the managed coordination store. A
-customer restart restores its consent wait suspended; resuming requires a fresh
-Presentation/request. An approver can retry its stored exact choice after its
-own durable restart. Cancellation is best effort; deadlines remain binding.
+cold recovery of customer consent resumes through a fresh Presentation and
+request. A supervised Root that reattaches to the same live Managed GAM
+owner can continue an eligible live presentation.
+An approver can retry its stored exact choice after its own durable restart.
+Cancellation requests close outstanding waits on a best-effort basis.
+Their signed deadlines remain binding. [Live and cold recovery](MANAGED_GAM.md#choose-persistence).
 
 Transport calls run in supervised tasks, with at most 256 concurrent deliveries
 per Gate and a timeout bounded by `gam: [show_timeout: milliseconds]` (default

@@ -4,6 +4,9 @@ defmodule Mix.Tasks.Spectre.Gen.Installable do
 
       mix spectre.gen.installable MyApp.SupportPackage
 
+  The generated test also installs the package in a test Stack, so adding
+  `integration/1` exercises the compiled bindings.
+
   Files are never overwritten unless `--force` is passed. `--dry-run`
   validates the complete generation plan without changing the filesystem.
 

@@ -91,7 +91,10 @@ defmodule Spectre.Server.Reset do
            |> Keyword.put(:runtime_control, control)
            |> Keyword.put(:bootstrap_owner, self()),
          {:ok, owner} <- Managed.start_link(managed_opts) do
-      send(parent, {Runtime, state.control, :reset_activating, token, owner})
+      send(
+        parent,
+        {Runtime, state.control, :reset_activating, token, owner, durable_generation(candidate)}
+      )
 
       # The owner must record the irreversible phase before the CAS can start.
       receive do
@@ -112,6 +115,12 @@ defmodule Spectre.Server.Reset do
   catch
     :exit, reason -> {:error, {:reset_failed, reason}}
   end
+
+  defp durable_generation(%Session{mode: :configured, pointer: pointer, generation: generation})
+       when pointer != :memory,
+       do: generation
+
+  defp durable_generation(_candidate), do: nil
 
   defp freeze_skills(%{skill_supervisor: nil}), do: :ok
 

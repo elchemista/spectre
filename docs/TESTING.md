@@ -1,4 +1,4 @@
-# Testing Spectre 0.4
+# Testing Spectre 0.4.1
 
 The CI workflow is the source of truth for release checks. It tests Elixir
 `1.19.x` / OTP `28.x` and Elixir `1.20.x` / OTP `29.x`. Use separate build
@@ -36,8 +36,24 @@ earlier `cover/*.coverdata` exports before starting a new source revision.
 
 ```sh
 mix run docs/examples/agent_server_quickstart.exs
+mix run docs/examples/core_agents/run.exs
 mix run docs/examples/external_approval.exs
 ```
+
+The scripts cover local recognition, model-backed replies, a reusable Documents
+flow and two-agent consent. For chat and parallel Directive work, run in the
+Directive checkout with Core alongside it.
+
+```sh
+SPECTRE_PATH=../spectre mix run examples/agent_server_activity.exs
+SPECTRE_PATH=../spectre mix test test/directive_activity_test.exs
+```
+
+For a durable upgrade, the Core `test/server/tool_runtime_test.exs` suite
+contains a checkpoint captured with Spectre 0.4.0. The assertion checks that the
+new Server acquires its original pending tool result with the same command ID.
+`test/server/checkpoint_route_migration_test.exs` covers invalid migrations and
+checks the stored values stay intact.
 
 The external-approval example uses two agents and independent Domains without
 Pulse. The multipackage suite belongs to

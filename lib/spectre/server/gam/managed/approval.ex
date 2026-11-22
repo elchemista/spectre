@@ -11,6 +11,7 @@ defmodule Spectre.Server.GAM.Managed.Approval do
   alias Spectre.GAM.Canonical.Value
   alias Spectre.Server.Store.Port, as: Store
 
+  @doc "Sends an approval-protocol message. A successful transport acknowledgement records delivery only."
   @callback send_message(map(), keyword()) :: {:ok, term()} | {:error, term()}
   @end_of_time 253_402_300_799_999
 

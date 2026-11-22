@@ -29,6 +29,86 @@ The shared provider boundary covers:
 Provider-specific training and semantic-cache administration remain explicit
 host operations and are not silently given runtime retry policies.
 
+## Response models and chat prompts
+
+Declare `model MyApp.ChatModel` inside the Agent for normal replies.
+A synchronous adapter implements `complete(prompt, opts)` and returns
+`{:ok, text_or_response}` or `{:error, reason}`. An optional
+`complete_plan/2` can consume the typed prompt plan. Configure provider
+credentials in your adapter or supervised resource. See the
+[model behaviour and examples](BEHAVIOURS.md#models-inference-and-text-boundaries).
+
+With `use Spectre.Server, prompt_root: "priv/prompts"` in your Server,
+`generate(ctx, :chat)` looks up `priv/prompts/chat.text.heex`. The prompt
+receives the current `@input`. A model has access to prior turns when
+the application includes them. Maintain a bounded `:conversation_notes`
+assign to use in the prompt.
+
+```elixir
+def handle_flow(:unmatched, _input, ctx) do
+  notes = Map.get(ctx.assigns, :conversation_notes, "")
+  generate(ctx, :chat, assigns: %{conversation_notes: notes})
+end
+```
+
+The per-command `assigns:` supplies template values for this generation.
+The application can populate notes in its own turn/result callbacks or load
+them through a tool before generating.
+
+```heex
+Reply to the newest message using the prior context when relevant.
+Prior context: <%= Spectre.Prompt.data(@conversation_notes) %>
+Newest message: <%= Spectre.Prompt.data(@input.text) %>
+```
+
+`Spectre.Prompt.data/1` marks interpolated conversation data in the prompt.
+Default generation uses the current input and the app's assigns. A custom
+generation service can also read the bounded Server history through its
+service context. [Open-chat example](EXAMPLES.md).
+
+## Select a model from the Stack
+
+Prism can select a generation model from installed profiles. This example uses
+an application adapter `MyApp.ModelProvider` and the `answer.text.heex` prompt
+under `priv/prompts`.
+
+```elixir
+defmodule MyApp.AI do
+  use Spectre.Stack
+
+  install Spectre.Prism do
+    provider :app, MyApp.ModelProvider
+    model :fast, id: "fast-model"
+    model :deep, id: "deep-model"
+    default :fast
+  end
+end
+
+defmodule MyApp.SupportAgent do
+  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+  router strategies: [:regex]
+
+  flow :research, prism: [minimum: :deep] do
+    on :report, regex: ~r/^research\b/i
+  end
+end
+
+defmodule MyApp.SupportServer do
+  use Spectre.Server, prompt_root: "priv/prompts"
+
+  def handle_flow({:research, :report}, _input, ctx), do: generate(ctx, :answer)
+  def handle_flow(:unmatched, _input, ctx), do: generate(ctx, :answer)
+end
+```
+
+The same Server command uses the stronger profile in the research flow and
+the default profile for ordinary chat. The Server's default result handler
+delivers the generated reply. [Prism configuration](https://github.com/elchemista/spectre_prism).
+In this Stack block, `provider` names the adapter, `model` declares a local
+profile and its external model ID, and `default` chooses the ordinary profile.
+`minimum: :deep` restricts the provider selection for the `:research` flow.
+`prompt_root:` and `:answer` identify the same prompt for both paths.
+
 ## Default Timeouts
 
 | Provider | Option | Default |
@@ -41,7 +121,9 @@ host operations and are not silently given runtime retry policies.
 | Turn handler | `turn_handler_timeout` | 30 seconds |
 
 `provider_timeout` is a common fallback when the provider-specific option is
-absent. Use `:infinity` explicitly to remove the Spectre deadline.
+absent. `:infinity` removes that provider deadline. AgentServer also bounds
+the enclosing command worker through `worker_timeout:` and command options.
+The earliest applicable deadline can end the work.
 
 Application defaults are ordinary configuration:
 

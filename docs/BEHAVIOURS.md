@@ -170,7 +170,7 @@ when replacing a recognition provider.
 | Behaviour | Required callbacks | Optional callbacks | Wiring, result and example |
 | --- | --- | --- | --- |
 | `Spectre.LLM` | `complete/2` | `complete_plan/2` | `model MyApp.Model, opts` binds synchronous completion; `classifier :llm, MyApp.Model, opts` binds classifier completion. Return `{:ok, text_or_response}` or `{:error, reason}`. `complete_plan/2` receives a typed `Spectre.Prompt.Plan`; otherwise the module receives its serialized string. [Providers](PROVIDERS.md), example below. |
-| `Spectre.Inference.Selector` | `select/4` | None | An Extension's `inference_selector/1` contributes a selector and immutable profiles. Receive request, profiles, `Spectre.Context` and options; return `{:ok, Spectre.Inference.Selection.t()}` or `{:error, reason}`. [Selection fixtures](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/test/inference_contract_test.exs). |
+| `Spectre.Inference.Selector` | `select/4` | None | Bind the role through `Spectre.Integration.service/4` or an installed Extension such as Prism. Receive request, profiles, `Spectre.Context` and options. Return `{:ok, Spectre.Inference.Selection.t()}` or `{:error, reason}`. [Configure selection](PROVIDERS.md#select-a-model-from-the-stack). |
 | `Spectre.Inference.StreamAdapter` | `capabilities/2`, `open/2`, `handle_transport/2`, `cancel/2` | `request_transport_item/1`, `resume/3`, `reconcile/3`, `conformance_fixture/4` | Configure `stream_adapter:` with the provider binding. Capabilities are a `MapSet`; open/resume return state and metadata; transport returns normalized `ProviderEvent` batches, ignore or error. Pull transport requires its demand callback; declared resume/reconcile capabilities require the corresponding callbacks. [Streaming contract and examples](STREAMING_INFERENCE.md), [fixture](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/test/inference_stream_contract_test.exs). |
 | `Spectre.Input.Plug` | `init/1`, `call/3` | `rehearsable?/0` | Install with `input_pipeline`. Return `{:cont, input}`, `{:halt, input}` or `{:error, reason}`. Input is normalized/enriched before downstream processing. [Input pipeline](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/docs/legacy/DSL_0_3.md#input-pipeline), example below. |
 | `Spectre.Reply.Sanitizer` | `sanitize/2` | `init_stream/1`, `sanitize_chunk/2`, `finish_stream/1` | Configure `reply_sanitizer: Module` or `{Module, opts}`. Terminal cleanup returns a string. Streaming needs all three optional callbacks, returning initialized state, text/state chunks and terminal text. [Sanitizer example](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/docs/legacy/STREAMING_INFERENCE_0_3.md#optional-sanitizer-extensions), [fixtures](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/test/reply_sanitizer_test.exs). |
@@ -255,19 +255,21 @@ compatible function/tuple binding without an Elixir behaviour implementation.
 
 | Behaviour | Required callbacks | Optional callbacks | Wiring, result and example |
 | --- | --- | --- | --- |
-| `Spectre.Stack.Installable` | `manifest/0` | `compile/3`, `tools/1`, `effects/1`, `child_specs/2` | `install Package, opts` in a Stack. Manifest describes the immutable package; compile returns `{:ok, map_or_keyword}` or error; tools/effects return descriptor maps. Child specs return identified specs, optionally inside `{:ok, specs}`, or error. `use` supplies a manifest and data-only default compiler. [Package authoring](STACK.md#installable-contract-v1), example below. |
+| `Spectre.Stack.Installable` | `manifest/0` | `compile/3`, `integration/1`, `tools/1`, `effects/1`, `child_specs/2` | `install Package, opts` in a Stack. Manifest identifies the immutable package. Compile returns `{:ok, map_or_keyword}` or error. Integration returns a `Spectre.Integration` declaration. Tools and effects return descriptor maps. Child specs return identified specs, optionally wrapped in `{:ok, specs}`, or error. [Package authoring](STACK.md#installable-contract-v1). |
+| `Spectre.Flow.Port` | `routes/0`, `handle_flow/3` | `handle_result/3` | Register a local scope with `Spectre.Integration.flow/3`. The Agent exposes that scope. Return a list of route declarations from `routes/0`. Selected handlers receive a local label, input and Context. Each handler returns Context. [Reusable flows](AGENT_SERVER.md#reusable-flows-and-targeted-answers). |
+| `Spectre.Activity` | `handle_start/2` | `handle_signal/2` | Declare a module using `Spectre.Activity` in a Stack or a package integration. It receives the start arguments or signal and Context. Use the inherited Server result callback to continue commands. [Activity lifecycle](AGENT_SERVER.md#run-a-background-activity). |
 | `Spectre.Extension` | None formally | `id/0`, `api_version/0`, `setup/2`, `compile/2`, `action_providers/1`, `action_planner/1`, `effect_executors/1`, `flow_constraints/2`, `inference_selector/1`, `agent_config/1`, `expand_handler/3` | An installable manifest's `agent_extensions:` registers these contributions automatically; explicit mounts remain compatible. Returns are immutable compilation data, lists/bindings of ports, normalized constraints or handler AST as declared. [Stack extension example](STACK.md#installable-contract-v1), [extension fixture](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/test/stack_contract_test.exs). New packages publish Installable manifests; Agent owns its compile hook. |
 | `Spectre.Server.GAM.EffectAdapter` | `execute_effect/3` | `effect_schema/2` | Register through `effects/1`, then enable the operation in Server `gam: [operations: ...]`. Execute receives the registered operation, frozen arguments and context. Return `{:ok, receipt}` or `{:error, :failed \| :definitive_no_effect \| :ambiguous, reason}`. Schema returns `{:ok, hash}` or error. [Effect registration](STACK_TOOLS.md#registered-execution-for-managed-gam), [complete fixture](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/test/server/effect_boundary_test.exs). |
 | `Spectre.Stack.PackageData` | `erasure_plan/2`, `erase_instance/2` | None | An installable that persists Instance-scoped data may additionally declare this behaviour. Return `{:ok, plan}` and `{:ok, outcome}`, or errors. This is the retained offline Instance-erasure integration, not automatic deletion on Server reset. [Package erasure](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/docs/legacy/ERASURE.md#stack-package-data), [fixture](https://github.com/elchemista/spectre/blob/109684e0b5fa87ca2e352b2f7e28d0702a0cbc1c/test/stack_package_data_test.exs). |
 
-The package below creates a pure cognitive tool. `prepare`, `invoke` and
-`project` are documented module API functions; only `tools/1` belongs to the
-Installable behaviour.
+The package below creates a pure cognitive tool. The adapter exposes
+`prepare/3`, `invoke/3` and `project/2` as module functions. The package implements
+`integration/1` and names those functions' adapter through `Integration.tool/4`.
 
 ```elixir
 defmodule MyApp.UppercaseTool do
   @spec prepare(:convert, term(), map()) :: {:ok, String.t()} | {:error, atom()}
-  def prepare(:convert, text, _trusted) when is_binary(text), do: {:ok, text}
+  def prepare(:convert, %{text: text}, _trusted) when is_binary(text), do: {:ok, text}
   def prepare(:convert, _value, _trusted), do: {:error, :text_required}
 
   @spec invoke(:convert, String.t(), map()) :: String.t()
@@ -279,20 +281,13 @@ end
 
 defmodule MyApp.TextPackage do
   use Spectre.Stack.Installable,
-    id: :text_tools, version: "0.1.0", spectre: "~> 0.4.0"
+    id: :text_tools, version: "0.1.0", spectre: "~> 0.4.1"
 
   @impl true
-  def tools(_config) do
-    %{
-      uppercase: %{
-        contract: 1,
-        adapter: MyApp.UppercaseTool,
-        default: :convert,
-        operations: %{
-          convert: %{path: :cognitive, retry: :safe, max_bytes: 65_536}
-        }
-      }
-    }
+  def integration(_config) do
+    Spectre.Integration.new()
+    |> Spectre.Integration.tool(:convert, MyApp.UppercaseTool,
+      args: [text: :string], retry: :safe, max_bytes: 65_536)
   end
 end
 
@@ -302,11 +297,11 @@ defmodule MyApp.TextStack do
 end
 
 defmodule MyApp.TextServer do
-  use Spectre.Server, tools: MyApp.TextStack
+  use Spectre.Server
 
   @impl true
   def handle_flow({:text, :uppercase}, input, ctx),
-    do: uppercase(ctx, input.text, on_result: :uppercased)
+    do: call_tool(ctx, {:text_tools, :convert}, %{text: input.text}, on_result: :uppercased)
 
   def handle_flow(route, input, ctx), do: super(route, input, ctx)
 
@@ -318,15 +313,16 @@ defmodule MyApp.TextServer do
 end
 ```
 
-The Agent must select `stack: MyApp.TextStack, server: MyApp.TextServer` and
-declare the `{:text, :uppercase}` route. Resources start only when the
-application explicitly supervises `Spectre.Stack.Runtime`; it is unnecessary
-for this pure example. Use `Spectre.Stack.Conformance` for installables.
-`:safe` permits replay of unfinished cognitive work; `:never` preserves an
-uncertain result after interruption. Neither supplies exactly-once effects.
-For effects, follow the complete [registration and authority
-guide](STACK_TOOLS.md): a tool descriptor and an effect registration alone do
-not permit execution.
+Bind `stack: MyApp.TextStack, server: MyApp.TextServer` on an Agent and add
+`on :uppercase, regex: ~r/.+/` inside `flow :text` for a simple smoke test.
+`:uppercase` is the route, `:convert` is the tool operation and
+`:uppercased` is the callback tag. The adapter receives the text as a named
+argument, produces a string, and sends that string through `project/2`.
+`retry: :safe` allows interrupted pure work to repeat and `max_bytes:`
+limits the size of prepared arguments and projected values. This adapter uses
+only pure functions. For a client or pool, supervise a runtime and resolve the
+expected resource from the worker. [All tool options and retries](STACK_TOOLS.md),
+[billing example with an effect](CUSTOM_STACK_TOOLS.md).
 
 ## Storage, payloads and recovery
 

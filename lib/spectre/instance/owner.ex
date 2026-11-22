@@ -15,10 +15,14 @@ defmodule Spectre.Instance.Owner do
 
   @type config :: module() | {module(), keyword()} | nil
 
+  @doc "Acquires the Instance's canonical lease with a fencing token newer than the supplied minimum."
   @callback claim(Ref.t(), keyword()) :: {:ok, Lease.t()} | {:error, term()}
+  @doc "Acquires a lease for the given offline maintenance purpose only when the Instance is unowned."
   @callback claim_maintenance(Ref.t(), atom(), keyword()) ::
               {:ok, Lease.t()} | {:error, term()}
+  @doc "Confirms that the supplied lease still owns the exact Instance reference."
   @callback validate(Ref.t(), Lease.t(), keyword()) :: :ok | {:error, term()}
+  @doc "Releases the supplied lease without releasing a newer lease for the same Instance."
   @callback release(Ref.t(), Lease.t(), keyword()) :: :ok | {:error, term()}
 
   @optional_callbacks claim_maintenance: 3, release: 3

@@ -45,6 +45,43 @@ frequent polling prevents a long idle period.
 
 ## Reproduce workload profiles
 
+### AgentServer Activities in 0.4.1
+
+From the Core checkout, run the Activity profile in an isolated VM. Set the
+temporary directory to a physical disk when measuring writes.
+
+```sh
+ERL_FLAGS='+S 2:2' mix run bench/profile_activity.exs ram 256
+mkdir -p tmp
+TMPDIR="$PWD/tmp" ERL_FLAGS='+S 2:2' mix run bench/profile_activity.exs disk 16
+```
+
+The profile starts a real AgentServer, opens a foreground wait, holds two
+provider workers while serving unrelated Root turns, and repeats start/cancel
+in three batches. It samples GC'd process memory, reductions, mailbox depth,
+turn latency, worker lifetimes, checkpoint bytes and storage writes.
+
+| Backend | Idle | One wait | Two workers | After start/cancel batches |
+| --- | ---: | ---: | ---: | ---: |
+| RAM, additional processes | 7 | 10 | 13 | 9 |
+| RAM, memory | 74,864 B | 78,832 B | 137,520 B | 1,047,976 B |
+| Disk, additional processes | 8 | 11 | 14 | 10 |
+| Disk, memory | 89,520 B | 81,976 B | 119,968 B | 228,584 B |
+
+On Elixir 1.20.4 / OTP 29 with two schedulers, the RAM run retained 256
+terminal entries plus the Root entry from cycle 256 through 768. Total
+process memory after GC leveled off around 1.05 MB from cycle 512 to 768 in
+two runs. The 95th-percentile Root turn was 1.88 ms with two held workers.
+The disk run exercised 48 starts and cancellations. Its coordination
+file grew from 3,128 to 17,920 B while the BEAM reported about 29.5 MB of
+physical writes on ext4. The Root checkpoint stayed near 2.9 KB in both
+runs. Both returned to the initial live process count after stopping the Root.
+Sampled mailbox depth was at most three and the Root served all 24 timed
+inputs per sample while the two workers were held. The disk samples ran
+alongside other checks. Use a quiet VM for latency or throughput comparisons.
+
+### Durable Domain and Stack workloads
+
 From Ledger, with PostgreSQL installed and local core selected:
 
 ```sh

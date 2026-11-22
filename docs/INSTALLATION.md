@@ -21,7 +21,7 @@ follow [Migration](MIGRATING_TO_0_4.md) for the changes to Agents, Servers and t
 ```elixir
 defp deps do
   [
-    {:spectre, "~> 0.4.0"}
+    {:spectre, "~> 0.4.1"}
   ]
 end
 ```
@@ -30,6 +30,20 @@ Companion libraries are optional: add only the packages your Stack installs,
 using their Spectre 0.4-compatible versions. See [Stack tools](STACK_TOOLS.md)
 and the package's own installation guide. Commit `mix.lock` to keep dependency
 versions reproducible.
+
+## Upgrading a durable AgentServer
+
+Spectre 0.4.1 can read 0.4.0 checkpoints. Recompiling a Server with the 0.4.1
+macros changes its compiled definition fingerprint, so opening a checkpoint
+from the old definition requires the application's `checkpoint_migrator:`
+at startup. Drain in-flight effects, back up the stores and test recovery
+against a copy before switching production. The migrator verifies that the
+saved application state and continuations are compatible with the new code
+and returns the validated projection. Governed commands still follow their
+original GAM recovery rules.
+[Checkpoint migration](AGENT_SERVER.md#checkpoints-and-reconciliation).
+
+## Install from Git
 
 To depend on source instead, select an exact reviewed commit:
 

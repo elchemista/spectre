@@ -17,17 +17,38 @@ defmodule Spectre.Router.SemanticCache do
   alias Spectre.Provider.Reply
   alias Spectre.Router.SemanticCache.Learned
 
+  @doc "Looks up evidence for a message and returns a route-like map or a miss."
   @callback lookup(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+
+  @doc "Stores an example for a classified message using the configured dataset options."
   @callback put(String.t(), map(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
+
+  @doc "Lists the examples available to an Agent."
   @callback examples(module(), keyword()) :: {:ok, [map()]} | {:error, term()}
+
+  @doc "Fetches one example for the Agent using its example ID."
   @callback get_example(module(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+
+  @doc "Changes an online example's route label and marks the corrected example verified."
   @callback relabel(module(), String.t(), atom(), keyword()) :: {:ok, map()} | {:error, term()}
+
+  @doc "Applies the supplied text, label or verification changes and returns the resulting example."
   @callback update_example(module(), String.t(), map(), keyword()) ::
               {:ok, map()} | {:error, term()}
+
+  @doc "Deletes an online example by its ID."
   @callback delete(module(), String.t(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
+
+  @doc "Marks an online example as verified and returns the resulting example."
   @callback verify(module(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+
+  @doc "Exports a dataset snapshot with its stored embeddings."
   @callback snapshot(module(), keyword()) :: {:ok, term()} | {:error, term()}
+
+  @doc "Loads a previously exported dataset snapshot for the Agent."
   @callback load_snapshot(module(), term(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
+
+  @doc "Clears the Agent's online examples and associated lookup cache."
   @callback clear(module(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
 
   @optional_callbacks put: 3,

@@ -50,6 +50,8 @@ defmodule Spectre.Classifier do
     :version
   ]
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+
   @doc false
   @spec artifact_schema_atoms() :: [atom()]
   def artifact_schema_atoms, do: @artifact_schema_atoms

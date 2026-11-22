@@ -13,9 +13,11 @@ defmodule Spectre.Journal.Store do
   @type config :: module() | {module(), keyword()} | keyword() | false | nil
   @type normalized :: nil | {module(), keyword()}
 
+  @doc "Appends one structured journal record using the configured adapter options."
   @callback append(Spectre.Journal.Record.t(), keyword()) ::
               :ok | {:ok, term()} | {:error, term()}
 
+  @doc "Idempotently erases every journal record bound to the exact Instance reference."
   @callback erase_instance(Ref.t(), keyword()) ::
               {:ok, :erased | :already_erased} | {:error, term()}
 

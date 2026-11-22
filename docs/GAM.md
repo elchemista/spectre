@@ -1,12 +1,11 @@
-# GAM in Spectre 0.4
+# Governed Act Model in Spectre
 
 AgentServer manages GAM automatically. For startup, application callbacks and
 the boundary between application policy and kernel invariants, see
 [Automatic GAM](MANAGED_GAM.md).
 
-Spectre 0.4 imports the Governed Act Model kernel under `Spectre.GAM` and
-connects it to AgentServer through `Spectre.Server.GAM`. It does not redefine
-the model. The source of its principles is the
+The Governed Act Model kernel lives under `Spectre.GAM`. AgentServer connects
+to it through Managed GAM. The source of its principles is the
 [GAM manifesto](https://spectre.guide/en/governed-act-model).
 
 This guide explains the integration. An application still has to define its
@@ -59,10 +58,12 @@ input → recognition → handle_flow / handle_result
                   observed Outcome → handle_result
 ```
 
-A deterministic regex route and a model-generated Kinetic proposal use the same
-operation binding. `protected: true` is route metadata that requests the
-confirmation path; it neither grants authority nor supplies the operation's
-class or mandate. A generated tool descriptor also does not grant permission.
+A deterministic regex route, a model-generated Kinetic proposal and a Directive
+Activity's governed tool can use the same operation binding. Set
+`protected: true` on a route to request confirmation for governed proposals
+made in that context. Set `confirm: true` on an operation to always require
+consent for it. The host still registers the effect and supplies the policy and
+authority for admission.
 
 The Server command outbox and GAM command journal support recovery. Before a
 worker can release a governed consequence, the kernel must record the admitted
@@ -88,6 +89,12 @@ record construction, standard ingress and execution protocol:
 )
 ```
 
+The `agent:` selects the application's Agent and Server. `subject:` supplies
+the local Registry ownership key while `identity:` supplies authenticated
+authority context. The current process is the consumer that renders and answers
+consent. `storage:` names a durable directory, and `operations:` enables
+`:delete_account` with confirmation.
+
 The delete operation must have a registered effect adapter. A `handle_action/2`
 callback can reject the proposed account, require confirmation, or freeze business
 context. It cannot grant authority or execute deletion itself. The consumer renders
@@ -99,7 +106,7 @@ outside AgentServer. That low-level API is not a second Server startup mode and
 is not required to author an Agent or Skill. Its callers must preserve the same
 admission, commitment, evidence and execution rules.
 
-## Agent and Skill servers share one Domain
+## One Domain for the Root, Skills and Activities
 
 The root AgentServer automatically creates the GAM connection used by its
 mounted Skill Servers. Each Skill runs in a separate GenServer with its own
@@ -114,6 +121,13 @@ the originating Skill and exact presentation; approval in one Skill cannot
 approve another. Timers use the same lifecycle ingress and cannot erase a Duty.
 See [Skills](SKILLS.md) for the process tree and two-Skill example.
 
+An Activity has its own execution reference, revision and callbacks. Its
+`call_tool/4` command uses the same Stack resolution as the Root, subject to the
+Activity's effective tool scope. If the tool declares `governed:`, its
+prepared operation enters the Root's Domain. Starting an Activity schedules
+work. Admission and consent apply when the Activity proposes a governed
+consequence. [Activity API](AGENT_SERVER.md#run-a-background-activity).
+
 ## Consent is attached to what was shown
 
 For a confirming operation, the bridge prepares a Presentation and submits its
@@ -121,9 +135,14 @@ show through admission. The show Act needs a successful show Outcome before a
 response can approve the effect. The original response reaches the Domain's
 fixed ingress; a classifier label alone cannot mint approval Evidence.
 
-The presentation binds the candidate and relevant material. A “yes” must approve
-that shown consequence, not a later changed recipient, payload, purpose or
-cost. `handle_pending` manages the conversation around this protocol:
+The presentation binds the candidate and relevant material. A “yes” applies
+to the recipient, payload, purpose and cost that were shown. An ordinary
+question such as “Which country?” can use `await_input/3` and return
+`{:ok, %Spectre.Input{}}` to its continuation. Use its wait ID and revision to
+target the answer. Consent instead uses the exact GAM Presentation and
+authenticated response. [Waits and decisions](SERVER_CALLBACKS.md).
+
+`handle_pending/3` can manage the conversation around a foreground consent.
 
 ```elixir
 def handle_pending(%{kind: :consent} = pending, input, ctx) do
@@ -141,10 +160,12 @@ end
 def handle_pending(pending, input, ctx), do: super(pending, input, ctx)
 ```
 
-The helper selects the pending intention; the host interpreter and ingress
-still validate the original response. An application can use classification to
-help choose its conversational branch without treating classification as
-consent. The runtime records the timer through its lifecycle ingress; durable storage
+`pending.id` selects the intention. In the `"pricing"` branch, `60_000` schedules
+its closure in one minute, `reason: :topic_changed` labels the closure, and
+`suspend: pending.id` lets the pricing input go through ordinary recognition.
+The host interpreter and ingress validate the original response before recording
+consent. An application can use classification to choose a conversational branch.
+The runtime records the timer through its lifecycle ingress. Durable storage
 preserves the schedule across restart.
 
 Topic changes suspend the intention. A later `resume_pending` creates a fresh
@@ -152,6 +173,12 @@ presentation. Recovery does not silently reactivate old consent, and a generic
 “yes” on another topic cannot approve it. Default consent expiry is five minutes;
 `:infinity` explicitly disables it. Closure and expiry record lifecycle facts. Neither fabricates a rejection or
 reverses an already committed Act.
+
+An accepted Activity revision retires its previous waits and consent.
+A decision against the old presentation returns `{:error, :superseded}`.
+If admission won before the revision, the committed Act retains its identity
+and can deliver a late Outcome to the current Activity and Root. The application
+can show that outcome independently of the new work. [Activity consent](MANAGED_GAM.md#consent-from-an-activity).
 
 ## Handle facts, not optimistic completion
 

@@ -182,7 +182,7 @@ defmodule Spectre.Server.GAM.Effect do
   defp invoke(effect, args, context) do
     adapter_context =
       context
-      |> Map.take([:agent, :identity, :command_id, :skill, :input, :current_flow])
+      |> Map.take([:agent, :identity, :command_id, :skill, :activity, :input, :current_flow])
       |> Map.put(
         :options,
         Keyword.take(Map.get(context, :options, []), [:stack_runtime, :namespace])

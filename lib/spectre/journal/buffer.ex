@@ -10,6 +10,8 @@ defmodule Spectre.Journal.Buffer do
 
   use GenServer
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+
   @type enqueue_option ::
           {:buffer_size, pos_integer()}
           | {:overflow, :drop_newest | :drop_oldest}

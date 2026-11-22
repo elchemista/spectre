@@ -9,6 +9,9 @@ ownership and installed-tool integration. Follow this guide to move an existing
 0.3 application to the new model. The [installation guide](INSTALLATION.md)
 covers dependencies and source pins.
 
+If your application already uses a 0.4.0 AgentServer, start with the
+[durable upgrade steps](#upgrade-a-durable-checkpoint) below.
+
 The goal is to keep 0.3's useful recognition, training and Stack capabilities
 while making execution explicit: **Stack → Agent → Server, with GAM governing
 the host's declared consequences**. The kernel follows the
@@ -26,7 +29,7 @@ the host's declared consequences**. The kernel follows the
 | `learn: true` | `collect_intent: true`: explicitly collect intent examples |
 | `embedding:` examples on a rule | `semantic_examples:` describes the intent examples more clearly |
 | `via:` routing pipeline and `:classifier` / `:semantic_cache` names | `strategies:` with `:local_classifier` / `:intent_dataset`; older spellings remain aliases |
-| Direct package/legacy planner integration | Optional `Stack.Installable.tools/1` descriptors generate Server helpers from the selected Stack |
+| Direct package or legacy planner integration | Declare scoped tools with `Spectre.Integration`. Use package descriptor helpers where the package supplies them. |
 | Instance checkpoint/Run continuation | Server checkpoint + command outbox and GAM journal; no automatic format conversion |
 
 These are authoring changes, not a claim that all older modules were removed.
@@ -49,13 +52,14 @@ existence does not make arbitrary direct calls governed or durable.
 
 ## 1. Split the application modules
 
-Keep `MyApp.AI` as the Stack. Read the Agent's declarations before the Server's
-implementation. The `server:` binding names the callback module; it does not
-require that module to appear before the Agent in a single-file example:
+For this model-free example, the Agent binds the Server directly. Add
+`stack:` once the application installs a package or declares a reusable
+Activity. The `server:` binding names the callback module. The Agent
+can appear first in a single-file example.
 
 ```elixir
 defmodule MyApp.SupportAgent do
-  use Spectre.Agent, stack: MyApp.AI, server: MyApp.SupportServer
+  use Spectre.Agent, server: MyApp.SupportServer
 
   router strategies: [:regex]
 
@@ -65,7 +69,7 @@ defmodule MyApp.SupportAgent do
 end
 
 defmodule MyApp.SupportServer do
-  use Spectre.Server, tools: MyApp.AI
+  use Spectre.Server
 
   @impl true
   def handle_flow({:support, :pricing}, _input, ctx),
@@ -134,9 +138,13 @@ must not become unbounded retries.
 
 ## 4. Register and call installed tools
 
-Use `use Spectre.Server, tools: MyApp.AI`. Packages implementing `tools/1`
-register operations whose names generate private helpers such as `kinetic`,
-`mnemonic` and `lens`. Do not import those functions from package modules.
+For a scoped tool, install the package in `MyApp.AI`, set `stack: MyApp.AI`
+on the Agent and use `call_tool(ctx, {installation, operation}, args, opts)`.
+The installation ID and operation name select the adapter. The `on_result:`
+option supplies the tag for the continuation.
+If a package declares a generated helper such as `kinetic`, `mnemonic`
+or `lens`, set `use Spectre.Server, tools: MyApp.AI` to generate that
+private function in the callback module. [Declare your own tools](CUSTOM_STACK_TOOLS.md).
 
 The Stack descriptor selects the adapter and resource contracts. The runtime
 resolves named resources and normalizes governed operations to proposals before
@@ -211,6 +219,54 @@ presentation through `Server.decide/4`. Approval in one Skill does not authorize
 another. Timers record lifecycle changes in the shared ledger without erasing
 Duties. Legacy Instance Skill snapshots are not automatically converted. See
 [the full Skill example and ownership table](SKILLS.md).
+
+## Upgrade a durable checkpoint
+
+The AgentServer checkpoint format is supported. Recompiling the AgentServer
+with 0.4.1 can change its definition fingerprint. For durable deployments,
+drain work, back up and rehearse recovery against a copy of the old store.
+
+1. Preserve the Agent identity, storage namespace, authority configuration and
+   any application-owned payloads needed to resolve saved work.
+2. If the definition fingerprint changed, configure the verified application
+   callback as `checkpoint_migrator: {MyApp.CheckpointMigration, :migrate}`
+   on Server startup. It receives the old projection and metadata with
+   `agent`, `server`, `schema_version`, `from` and `to`. Verify the
+   expected source and target fingerprints and return `{:ok, projection}`
+   or `{:error, reason}`. A migrated route can also return the dispatch-key
+   mapping in the third element of the success tuple.
+3. Preserve the recorded continuation identity and reconcile already admitted
+   effects through GAM. Confirm that a saved effect is observed once and
+   recovered consent uses its valid Presentation before reconnecting users.
+
+For a reviewed upgrade whose saved application data already matches the
+new code, the migration callback can return the projection as received.
+Configure `:reviewed_checkpoint_upgrade` with the exact `{from, to}`
+fingerprints recorded during the rehearsal.
+
+```elixir
+defmodule MyApp.CheckpointMigration do
+  def migrate(saved, %{from: from, to: to}) do
+    case Application.fetch_env!(:my_app, :reviewed_checkpoint_upgrade) do
+      {^from, ^to} -> {:ok, saved}
+      _ -> {:error, :unreviewed_checkpoint_upgrade}
+    end
+  end
+end
+```
+
+The 0.4.0 checkpoint regression verifies that a safely replayable acquired
+command uses its original command ID after migration. Rejected migration
+leaves the saved checkpoint intact. An ephemeral Agent starts a fresh session
+without a stored checkpoint upgrade.
+[Checkpoint and route migration](AGENT_SERVER.md#checkpoints-and-reconciliation).
+
+Reuse your existing installed helpers, or adopt `Spectre.Integration` for
+new services, tools, Flow Ports and Activity types. Add a callback using
+`start_activity/4` when an independent job should run alongside chat.
+Governed proposals from new Activities use the same Domain.
+[Stack integration](STACK.md#typed-package-integrations),
+[Activity lifecycle](AGENT_SERVER.md#run-a-background-activity).
 
 ## Recognition precedence in the new Server
 

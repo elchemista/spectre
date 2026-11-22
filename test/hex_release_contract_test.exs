@@ -2,7 +2,8 @@ defmodule SpectreHexReleaseContractTest do
   use ExUnit.Case, async: true
 
   @root Path.expand("..", __DIR__)
-  @release "0.4.0"
+  @release "0.4.1"
+  @published "0.4.0"
   @workflow Path.join(@root, ".github/workflows/ci.yml")
   @satellite_apps ~w(
     spectre_history
@@ -42,8 +43,12 @@ defmodule SpectreHexReleaseContractTest do
     priv/templates/spectre.gen.installable/installable_test.exs.eex
   )
   @public_package_assets ~w(
+    docs/examples/core_agents/run.exs
+    docs/examples/core_agents/core_agents.exs
+    docs/examples/core_agents/prompts/chat.text.heex
     docs/examples/routing-eval.jsonl
   )
+  @development_guides ["docs/PLAN_0_4_1.md"]
   @excluded_package_paths ~w(
     docs/adr
     lib/spectre/instance/README.md
@@ -68,7 +73,7 @@ defmodule SpectreHexReleaseContractTest do
                          "SECURITY.md"
                        ] ++ Path.wildcard("docs/*.md", match_dot: true)
 
-  test "Hex package metadata describes the 0.4.0 release" do
+  test "Hex package metadata describes the package version" do
     config = Mix.Project.config()
     package = Keyword.fetch!(config, :package)
     docs = Keyword.fetch!(config, :docs)
@@ -203,7 +208,7 @@ defmodule SpectreHexReleaseContractTest do
              "#{Path.relative_to(source_path, @root)} couples core code to a satellite module"
     end
 
-    assert File.read!(Path.join(@root, "CHANGELOG.md")) =~ "## #{@release} — 2026-11-17"
+    assert File.read!(Path.join(@root, "CHANGELOG.md")) =~ "## #{@published} — 2026-11-17"
   end
 
   defp forbidden_satellite_aliases(source) do
@@ -222,14 +227,12 @@ defmodule SpectreHexReleaseContractTest do
     |> Enum.sort()
   end
 
-  test "all Markdown guides are part of ExDoc and every local link resolves" do
+  test "published Markdown guides are part of ExDoc and every local link resolves" do
     extras = Mix.Project.config() |> Keyword.fetch!(:docs) |> Keyword.fetch!(:extras)
+    guides = Path.wildcard("docs/*.md", match_dot: true) -- @development_guides
 
-    assert MapSet.subset?(
-             MapSet.new(Path.wildcard("docs/*.md", match_dot: true)),
-             MapSet.new(extras)
-           )
-
+    assert guides -- extras == []
+    refute Enum.any?(@development_guides, &(&1 in extras))
     assert "LLMS.md" in extras
 
     for relative_file <- @documentation_files,
@@ -248,7 +251,7 @@ defmodule SpectreHexReleaseContractTest do
     dependency = ~s({:spectre, "~> #{@release}"})
     assert readme =~ dependency
     assert installation =~ dependency
-    assert llm_guide =~ "Spectre 0.4 guide"
+    assert llm_guide =~ "Spectre #{@release} guide"
     assert changelog =~ "## 0.3.4 — 2026-08-30"
     assert changelog =~ "## 0.3.3 — 2026-08-23"
     assert installation =~ ~s({:spectre, github: "elchemista/spectre", ref: "COMMIT_SHA"})
