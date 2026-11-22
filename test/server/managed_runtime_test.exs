@@ -61,13 +61,30 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     end
   end
 
+  defmodule DeliveryActivity do
+    use Spectre.Activity
+
+    def handle_start(args, ctx), do: propose(ctx, :deliver, args)
+
+    def handle_result(:propose, {:governed, %{outcome: %{status: :succeeded}}}, ctx),
+      do: complete(ctx, :delivered)
+
+    def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+  end
+
   defmodule Stack do
     use Spectre.Stack
     install(Package)
+    activity(:delivery, DeliveryActivity)
   end
 
   defmodule App do
     use Spectre.Server, tools: Stack
+
+    def init({:observe_start, observer}, ctx) do
+      send(observer, {:root_ready, self()})
+      {:ok, ctx}
+    end
 
     def init({:reject_start, observer}, _ctx) do
       send(observer, {:failing_init, self()})
@@ -80,6 +97,11 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     end
 
     def init(arg, ctx), do: super(arg, ctx)
+
+    def handle_call({:start_delivery, args}, _from, ctx),
+      do: {:reply, :queued, start_activity(ctx, :delivery, args)}
+
+    def handle_call(request, from, ctx), do: super(request, from, ctx)
 
     def handle_flow({:test, :send}, %{text: "helper"}, ctx),
       do: deliver(ctx, %{body: "helper"}, on_result: :sent)
@@ -536,6 +558,52 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     assert %{session: %{generation: generation}} = :sys.get_state(managed)
     assert is_binary(generation)
     assert_resumes_consent(first, supervisor)
+  end
+
+  test "supervised Root reattaches while its Activity holds an admitted effect" do
+    supervisor =
+      runtime_supervisor(
+        Server.child_spec(
+          agent: Agent,
+          consumer: self(),
+          init_arg: {:observe_start, self()},
+          identity: %{subject: "activity-checkout"},
+          gam: [operations: %{deliver: [confirm: false]}]
+        )
+      )
+
+    assert_receive {:root_ready, first}, 5_000
+    assert [{_, ^first, _, _}] = Supervisor.which_children(supervisor)
+    managed = :sys.get_state(first).managed_owner
+    held = %{body: "hold-during-restart"}
+
+    assert :queued = GenServer.call(first, {:start_delivery, held})
+    assert_receive {Server, ^first, {:activity, %{ref: activity_ref}, :started}}, 5_000
+    assert_receive {:effect_started, executor}, 5_000
+
+    try do
+      monitor = Process.monitor(first)
+      Process.exit(first, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^first, :killed}
+      assert_receive {:root_ready, second}, 5_000
+      refute first == second
+      assert :sys.get_state(second).managed_owner == managed
+      assert {:ok, %{status: :running}} = Server.activity(second, activity_ref)
+
+      assert {:ok, _} = Server.input(second, "root after restart")
+      assert_receive {:effect, %{body: "root after restart"}, _}, 5_000
+      assert_receive {:completed, {:governed, %{outcome: %{status: :succeeded}}}}, 5_000
+      refute_receive {:effect, ^held, _}
+
+      send(executor, :release_effect)
+      assert_receive {:effect, ^held, _}, 5_000
+
+      assert_receive {Server, ^second,
+                      {:activity, %{ref: ^activity_ref}, {:completed, :delivered}}},
+                     5_000
+    after
+      send(executor, :release_effect)
+    end
   end
 
   @tag :tmp_dir

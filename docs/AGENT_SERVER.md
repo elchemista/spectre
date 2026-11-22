@@ -15,7 +15,7 @@ Read [the migration guide](MIGRATING_TO_0_4.md) for the change from 0.3,
 [Installed tools](STACK_TOOLS.md) explains generated helpers and the companion
 satellite adapters. Existing application effects still require an explicit audit.
 
-For your first Server, [run the mail walkthrough](HANDLER_WALKTHROUGH.md). For an existing Server, [look up the event that calls your handler](SERVER_CALLBACKS.md). A direct reply ends at the consumer. An asynchronous command can resume in `handle_result/3`; a foreground wait takes the next input in `handle_pending/3`.
+For your first Server, [run the mail walkthrough](HANDLER_WALKTHROUGH.md). For an existing Server, [look up the event that calls your handler](SERVER_CALLBACKS.md). A direct reply reaches the consumer. An asynchronous command can resume in `handle_result/3`. A foreground wait declared by the Server can take the next input in `handle_pending/3`.
 
 ## Skill Servers share the root's automatic GAM
 
@@ -204,7 +204,10 @@ installed library type. An unnamed start receives a fresh execution reference.
 A name identifies one active execution at a time. Lifecycle events and
 `handle_activity/3` include the execution `ref` and optional `key` so callers can
 tell two uses of the same name apart. The configured consumer receives
-`{Spectre.Server, root, {:activity, identity, event}}`.
+`{Spectre.Server, root, {:activity, identity, event}}`. The identity includes an
+`event_id` for deduplication. The live coordinator keeps the most recent 256
+unacknowledged events and replays them to a replacement Root. The checkpoint
+records which events the Root has acquired.
 
 The consumer and configured submitters can use `Spectre.Server.activities/2`
 and `Spectre.Server.activity/3` to inspect work. `signal_activity/4` and
@@ -228,9 +231,74 @@ particular start further. Starting subactivities requires explicit
 `allow_children:` on the parent's declaration. [Stack integrations](STACK.md)
 
 The pilot is local to one BEAM node. A supervised Root restart can reattach to
-running Activities while Managed GAM survives. A failed Activity ends that
-execution and its siblings continue. Effects already admitted remain in the
-GAM history.
+running Activities while Managed GAM survives, including while those Activities
+have governed work in flight. A failed Activity ends that execution and its
+siblings continue. The Root can receive an admitted effect's outcome even after
+its Activity ends. The checkpoint remains available while a governed command is
+unconfirmed. Storage recovery closes the affected Activities with
+`{:failed, :gam_storage_recovered}` and keeps their recent status available.
+After recovery the Root can start new Activities. If a completion arrives
+after the coordinator advances the revision, it emits
+`{:superseded, revision, {:completed, result}}` and the current revision keeps running.
+
+## Reusable flows and targeted answers
+
+A Stack package can register a flow with `Spectre.Integration.flow/3`. The
+Agent makes it visible to its router with `expose :documents`, or selects a
+specific scope with `expose flows: [{:documents, :lookup}]`. The selected flow
+receives its local route label in `handle_flow/3`, named regex captures in
+`ctx.routing[:params]` and its command results in `handle_result/3`.
+Visible route labels are unique within an Agent.
+
+```elixir
+defmodule MyApp.Documents.Flow do
+  use Spectre.Flow.Port
+
+  def routes, do: [on(:lookup, regex: ~r/^show document(?: (?<id>D\d+))?$/i)]
+
+  def handle_flow(:lookup, _input, %{routing: %{params: %{"id" => id}}} = ctx)
+      when is_binary(id) and id != "",
+      do: load(ctx, id)
+
+  def handle_flow(:lookup, _input, ctx) do
+    ctx
+    |> respond("Which document?")
+    |> await_input(:document_id, accept: ~r/^D\d+$/i, on_result: :document_id)
+  end
+
+  def handle_result(:document_id, {:ok, input}, ctx), do: load(ctx, input.text)
+
+  def handle_result(:document_id, {:error, :expired}, ctx),
+    do: respond(ctx, "The question expired.")
+
+  def handle_result(:read, {:ok, document}, ctx), do: respond(ctx, document.title)
+  def handle_result(:read, {:error, _reason}, ctx), do: respond(ctx, "Document unavailable.")
+
+  defp load(ctx, id), do: call_tool(ctx, {:documents, :read}, %{id: id})
+end
+```
+
+`await_input/3` from a Flow or Activity publishes a wait reference and a
+deadline. Use `prompt:` to include the question in the event. An anchored
+`accept:` regex lets the focused wait take a matching message. Other input
+continues to ordinary routing and the wait remains available for a targeted
+reply until its deadline. Free-text questions use targeted replies. Successful
+answers arrive as `{:ok, %Spectre.Input{}}` and timeouts as `{:error, :expired}`.
+
+```elixir
+# Root or Flow wait event
+{Spectre.Server, root, {:waiting_input, %{id: id, revision: revision}}}
+Spectre.Server.input(root, "D12", pending: {id, revision})
+
+# Activity wait event
+{Spectre.Server, root,
+ {:activity, %{ref: ref}, {:waiting_input, %{id: id, revision: revision}}}}
+Spectre.Server.input(root, "Italy", activity: ref, pending: {id, revision})
+```
+
+The consumer or a configured submitter can answer an Activity wait. Revising
+the Activity retires its earlier wait. Use the verified presentation reference
+and `Spectre.Server.decide/4` for a GAM decision.
 
 ## Where GAM intervenes
 

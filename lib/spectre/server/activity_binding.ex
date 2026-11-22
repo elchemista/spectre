@@ -24,7 +24,9 @@ defmodule Spectre.Server.ActivityBinding do
          {:ok, ref} <-
            Activities.start(pid, state.active_command, child(state, binding, token, args, scope),
              as: opts[:as],
-             parent: if(state.activity, do: state.activity.ref)
+             parent: if(state.activity, do: state.activity.ref),
+             generation: token,
+             intent: {type, args, ordered_scope(scope)}
            ) do
       {:ok, %{ref: ref, key: opts[:as]}}
     else
@@ -32,6 +34,9 @@ defmodule Spectre.Server.ActivityBinding do
       error -> error
     end
   end
+
+  defp ordered_scope(:all), do: :all
+  defp ordered_scope(scope), do: scope |> Enum.uniq() |> Enum.sort()
 
   @spec control(map(), term(), term(), keyword()) :: term()
   def control(state, target, action, opts) do
@@ -95,6 +100,10 @@ defmodule Spectre.Server.ActivityBinding do
 
   def report(_state, _event), do: :ok
 
+  @spec finish(map(), term()) :: :ok | :superseded | {:error, atom()}
+  def finish(%{activity: %{owner: owner, ref: ref, revision: revision}}, event),
+    do: Activities.finish(owner, ref, revision, event)
+
   @spec presentation(map(), binary()) ::
           {:ok, pid(), reference(), non_neg_integer()} | {:error, term()} | :error | {:ok, nil}
   def presentation(state, ref) do
@@ -110,6 +119,10 @@ defmodule Spectre.Server.ActivityBinding do
     do:
       Keyword.keyword?(opts) and Keyword.keys(opts) -- [:if_revision] == [] and
         Enum.all?(opts, fn {:if_revision, revision} -> is_integer(revision) and revision >= 0 end)
+
+  @spec validate_signal(term()) :: :ok | {:error, :reserved_activity_signal}
+  def validate_signal({:signal, {:effect, _}}), do: {:error, :reserved_activity_signal}
+  def validate_signal(_), do: :ok
 
   defp permit_start(state, type) do
     with :ok <- permit_host(state.opts[:activities], type), do: permit_child(state.activity, type)

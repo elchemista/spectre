@@ -19,7 +19,7 @@ defmodule Spectre.Server.GAM.Managed do
   alias Spectre.Server.GAM.Managed.{Binding, Bootstrap, Gate, Reviewer}
   alias Spectre.Server.GAM.Managed.Identity, as: ManagedIdentity
   alias Spectre.GAM.Domain.Recovery.Policy, as: RecoveryPolicy
-  alias Spectre.Server.{Session, TaskGuard}
+  alias Spectre.Server.{Activities, Session, TaskGuard}
 
   @typedoc false
   @type attachment :: {reference(), reference(), pid()}
@@ -348,7 +348,7 @@ defmodule Spectre.Server.GAM.Managed do
 
       true ->
         # A call can arrive before the old runtime monitor notification. Wait
-        # for its exit classification and for acquired bridge work to finish.
+        # for its exit classification and for work using its control to finish.
         settle_workers(%{state | pending_attachment: %{from: from, control: control}})
     end
   end
@@ -497,19 +497,26 @@ defmodule Spectre.Server.GAM.Managed do
   def handle_call({:checkout, control}, from, state),
     do: handle_call({:checkout, control, nil}, from, state)
 
-  def handle_call({:checkout, _, _}, _, %{storage_recovery: _} = state),
+  def handle_call({:checkout, control, origin}, from, state),
+    do: handle_call({:checkout, control, origin, nil}, from, state)
+
+  def handle_call({:checkout, _, _, _}, _, %{storage_recovery: _} = state),
     do: {:reply, {:error, :managed_storage_recovering}, state}
 
-  def handle_call({:checkout, _, _}, _, %{reset_token: token} = state) when not is_nil(token),
+  def handle_call({:checkout, _, _, _}, _, %{reset_token: token} = state) when not is_nil(token),
     do: {:reply, {:error, :reset_busy}, state}
 
-  def handle_call({:checkout, control, origin}, {worker, _}, %{closing: false} = state) do
+  def handle_call(
+        {:checkout, control, origin, command_id},
+        {worker, _},
+        %{closing: false} = state
+      ) do
     if checkout_authorized?(state, control, origin),
-      do: checkout(state, worker, origin),
+      do: checkout(state, worker, origin, command_id),
       else: {:reply, {:error, :untrusted_governance_transport}, state}
   end
 
-  def handle_call({:checkout, _, _}, _, state),
+  def handle_call({:checkout, _, _, _}, _, state),
     do: {:reply, {:error, :managed_domain_closing}, state}
 
   def handle_call({:execution, act}, _, state) do
@@ -561,9 +568,7 @@ defmodule Spectre.Server.GAM.Managed do
     {:reply, reply, state}
   end
 
-  defp checkout(state, worker, origin) do
-    workers = Map.put_new_lazy(state.workers, worker, fn -> Process.monitor(worker) end)
-
+  defp checkout(state, worker, origin, command_id) do
     # Ordinary proposal workers receive only their own scope and bridge
     # configuration. The independent reviewer scope never leaves its owner.
     snapshot =
@@ -591,13 +596,32 @@ defmodule Spectre.Server.GAM.Managed do
         do: Map.put(snapshot, :activity_fence, state.activity_fence_token),
         else: snapshot
 
-    {:reply, {:ok, snapshot}, %{state | workers: workers}}
+    case track_activity_effect(state, snapshot, worker, origin, command_id) do
+      {:ok, snapshot} ->
+        workers =
+          Map.put_new_lazy(state.workers, worker, fn ->
+            %{monitor: Process.monitor(worker), origin: if(origin, do: :activity, else: :root)}
+          end)
+
+        {:reply, {:ok, snapshot}, %{state | workers: workers}}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
   end
+
+  defp track_activity_effect(%{activity_owner: owner}, snapshot, worker, %{ref: ref}, command_id)
+       when is_binary(command_id) do
+    with :ok <- Activities.track_effect(owner, ref, command_id, worker),
+         do: {:ok, Map.put(snapshot, :effect_observer, owner)}
+  end
+
+  defp track_activity_effect(_state, snapshot, _worker, _origin, _command_id), do: {:ok, snapshot}
 
   @impl true
   def handle_cast({:checkin, worker}, state) do
-    {monitor, workers} = Map.pop(state.workers, worker)
-    if monitor, do: Process.demonitor(monitor, [:flush])
+    {checkout, workers} = Map.pop(state.workers, worker)
+    if checkout, do: Process.demonitor(checkout.monitor, [:flush])
     settle_workers(%{state | workers: workers})
   end
 
@@ -614,17 +638,9 @@ defmodule Spectre.Server.GAM.Managed do
   # recovery. Its incident belongs to that previous storage generation.
   def handle_info({__MODULE__.Recovery, _token, _incident}, state), do: {:noreply, state}
 
-  def handle_info({:recover_storage, token}, %{storage_recovery: {token, decision}} = state) do
-    if state.closing do
-      {:noreply, state}
-    else
-      if map_size(state.workers) == 0,
-        do: recover_owned_storage(state, decision),
-        else:
-          {:noreply,
-           schedule_storage_recovery(Map.delete(state, :storage_recovery), decision, 25)}
-    end
-  end
+  def handle_info({:recover_storage, token}, %{storage_recovery: {token, decision}} = state)
+      when is_reference(token),
+      do: settle_workers(%{state | storage_recovery: {:awaiting_workers, decision}})
 
   def handle_info({:recover_storage, _token}, state), do: {:noreply, state}
 
@@ -702,7 +718,7 @@ defmodule Spectre.Server.GAM.Managed do
         {:noreply, finish_diagnostic_read(state, token, {:error, :diagnostic_source_unavailable})}
 
       nil ->
-        if Map.get(state.workers, worker) == monitor,
+        if match?(%{monitor: ^monitor}, Map.get(state.workers, worker)),
           do: settle_workers(%{state | workers: Map.delete(state.workers, worker)}),
           else: {:noreply, state}
     end
@@ -936,7 +952,7 @@ defmodule Spectre.Server.GAM.Managed do
     if Process.alive?(pid) do
       send(
         pid,
-        {Spectre.Server.Activities, control, :bind_root, state.options[:runtime],
+        {Activities, control, :bind_root, state.options[:runtime],
          state.options[:runtime_control]}
       )
 
@@ -951,7 +967,7 @@ defmodule Spectre.Server.GAM.Managed do
   defp obtain_activity_owner(state, :start) do
     control = make_ref()
 
-    case Spectre.Server.Activities.start_link(managed: self(), activity_control: control) do
+    case Activities.start_link(managed: self(), activity_control: control) do
       {:ok, pid} ->
         obtain_activity_owner(Map.put(state, :activity_owner, {pid, control}), :existing)
 
@@ -978,9 +994,27 @@ defmodule Spectre.Server.GAM.Managed do
   defp settle_workers(%{closing: true} = state), do: finish_close(state)
 
   defp settle_workers(
+         %{storage_recovery: {:awaiting_workers, decision}, workers: workers} = state
+       )
+       when map_size(workers) == 0 do
+    case recover_owned_storage(state, decision) do
+      {:noreply, next} when not is_map_key(next, :storage_recovery) -> settle_workers(next)
+      result -> result
+    end
+  end
+
+  defp settle_workers(
          %{owner_monitor: nil, workers: workers, pending_attachment: pending} = state
        )
-       when map_size(workers) == 0 and not is_nil(pending) do
+       when not is_nil(pending) do
+    if Enum.any?(workers, fn {_pid, checkout} -> checkout.origin == :root end),
+      do: {:noreply, state},
+      else: settle_attachment(state, pending)
+  end
+
+  defp settle_workers(state), do: {:noreply, state}
+
+  defp settle_attachment(state, pending) do
     runtime = elem(pending.from, 0)
 
     {reply, state} =
@@ -992,8 +1026,6 @@ defmodule Spectre.Server.GAM.Managed do
 
     {:noreply, reply_attachment(state, reply)}
   end
-
-  defp settle_workers(state), do: {:noreply, state}
 
   defp bind_runtime(state, runtime, control) do
     # The old Root never released the reset worker to activate its candidate.
@@ -1040,6 +1072,7 @@ defmodule Spectre.Server.GAM.Managed do
   end
 
   defp recover_owned_storage(state, decision) do
+    state = replace_activity_storage(state)
     {options, retained} = recovery_resources(state, decision)
 
     case Bootstrap.open(options, self()) do
@@ -1053,7 +1086,8 @@ defmodule Spectre.Server.GAM.Managed do
            %{
              checkpoint: checkpoint,
              previous_domain: state.refs.domain,
-             domain: recovered.refs.domain
+             domain: recovered.refs.domain,
+             activity_generation: state[:activity_owner] && elem(state.activity_owner, 1)
            }}
         )
 
@@ -1069,7 +1103,8 @@ defmodule Spectre.Server.GAM.Managed do
               :attachment_confirmed,
               :pending_attachment,
               :bootstrap_monitor,
-              :reset_token
+              :reset_token,
+              :activity_owner
             ])
           )
           |> restore_diagnostics(state)
@@ -1109,6 +1144,18 @@ defmodule Spectre.Server.GAM.Managed do
         end
     end
   end
+
+  defp replace_activity_storage(%{activity_owner: {pid, _old_control}} = state) do
+    control = make_ref()
+    :ok = Activities.replace_storage(pid, control)
+    %{state | activity_owner: {pid, control}}
+  catch
+    :exit, _ ->
+      Process.exit(pid, :kill)
+      Map.delete(state, :activity_owner)
+  end
+
+  defp replace_activity_storage(state), do: state
 
   defp recovery_resources(state, :memory) do
     terminate(:storage_recovery, state)
@@ -1296,9 +1343,11 @@ defmodule Spectre.Server.GAM.Managed do
 
   @impl true
   def terminate(reason, state) do
-    case state[:activity_owner] do
-      {pid, _} -> Process.exit(pid, :shutdown)
-      nil -> :ok
+    if reason != :storage_recovery do
+      case state[:activity_owner] do
+        {pid, _} -> Process.exit(pid, :shutdown)
+        nil -> :ok
+      end
     end
 
     Enum.each(Map.get(state, :diagnostic_reads, %{}), fn {_token, read} ->
@@ -1326,9 +1375,15 @@ defmodule Spectre.Server.GAM.Managed do
     with config when is_list(config) <- opts[:bridge_config],
          server when is_pid(server) <- config[:server],
          {:ok, state} <-
-           GenServer.call(server, {:checkout, config[:control], Map.get(context, :activity)}) do
+           GenServer.call(
+             server,
+             {:checkout, config[:control], Map.get(context, :activity),
+              effect_command(function, context)}
+           ) do
       try do
-        invoke_bridge(function, args, context, opts, operation, state)
+        result = invoke_bridge(function, args, context, opts, operation, state)
+        if observer = state[:effect_observer], do: Activities.settle_effect(observer, result)
+        result
       after
         GenServer.cast(server, {:checkin, self()})
       end
@@ -1336,6 +1391,12 @@ defmodule Spectre.Server.GAM.Managed do
       _ -> {:error, :managed_gam_not_running}
     end
   end
+
+  defp effect_command(function, context)
+       when function in [:propose, :confirm, :explain, :resume, :recover_command],
+       do: Map.get(context, :command_id)
+
+  defp effect_command(_function, _context), do: nil
 
   @spec invoke_bridge(atom(), list(), map(), keyword(), term(), map()) :: term()
   defp invoke_bridge(function, args, context, opts, operation, state) do

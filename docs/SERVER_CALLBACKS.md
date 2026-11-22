@@ -14,6 +14,7 @@ An immediate reply takes one `handle_flow/3` clause. Add `handle_result/3` to cu
 startup → init(arg, ctx)
 input → normalization and input pipeline
       ├─ global interrupt matches → suspend foreground wait → handle_flow
+      ├─ owned wait addressed or matched → the owner's handle_result
       ├─ foreground wait → handle_pending
       └─ otherwise → optional root turn handlers
                      ├─ early reply → handle_result(:pre_route, ...)
@@ -44,11 +45,12 @@ This is normalization before any input transformations. `text` is the text to re
 | Signature | Trigger, return and default |
 | --- | --- |
 | `init(arg, ctx)` | Startup or reset. `arg` comes from `:init_arg`. Return `{:ok, ctx}` (default), `{:ok, ctx, action}`, `:ignore` or `{:stop, reason}`. Initialize assigns with recovered values in mind. |
-| `handle_flow(key, input, ctx)` | Selected route or `:unmatched`. Return context. Supply a clause for each handled route: the default replies to `:unmatched` and raises for a recognized route without an implementation. |
+| `handle_flow(key, input, ctx)` | Selected route or `:unmatched`. Return context. An exposed Flow receives its local label and owns its command continuations. The Server handles its own routes and the fallback. [Reusable flows](AGENT_SERVER.md#reusable-flows-and-targeted-answers) |
 | `handle_pending(pending, input, ctx)` | New input for a foreground wait. Return context. The default resolves `%{kind: :reply, id: id}` with `{:ok, input}`. For `:consent` it confirms, rejects or explains the presentation again. |
 | `handle_action(action, ctx)` | On a governed proposal, before admission. Receives `%{operation: op, args: args, metadata: meta}`. Return `:default`, `:confirm`, `{:confirm, policy_map}` or `{:reject, reason}`. Use it to narrow policy for this request. |
 | `handle_result(tag, result, ctx)` | A command completes, a result is delivered or an error arrives. Return context. The default replies with generated text, continues a plan, handles errors and uncertain outcomes, or stays silent for other results. |
 | `handle_skill(mount, event, ctx)` | The root receives a Skill event, e.g. `{:response, id, text, meta}`. Return context. Default is silent. Preview and diagnostics notifications use a separate path. |
+| `handle_activity(identity, event, ctx)` | The Root receives a lifecycle event for a supervised Activity. `identity.ref` identifies the execution and `identity.revision` identifies its current revision. Return context. |
 | `handle_approval_inbox(event, ctx)` | The external approver inbox reports events such as receipt, duplicate, decision, storage error or a configured tick. Return `:default` or updated context. The human choice enters through the approval API. |
 
 ## OTP messages and optional contracts

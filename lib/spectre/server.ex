@@ -132,26 +132,7 @@ defmodule Spectre.Server do
       def handle_action(_action, _ctx), do: :default
       def handle_approval_inbox(_event, _ctx), do: :default
 
-      def handle_result(_tag, {:generated, %{text: text} = response}, ctx) do
-        case Map.get(response, :proposals, []) do
-          [] -> respond(ctx, text)
-          proposals -> Spectre.Server.Plan.start(ctx, proposals)
-        end
-      end
-
-      def handle_result({Spectre.Server.Plan, remaining}, result, ctx),
-        do: Spectre.Server.Plan.continue(ctx, remaining, result)
-
-      def handle_result(_tag, {:error, _failure}, ctx),
-        do: respond(ctx, "The request could not be completed.")
-
-      def handle_result(_tag, {:governed_unknown, _details}, ctx),
-        do: respond(ctx, "The operation is still under verification.")
-
-      def handle_result(_tag, {:tool_unknown, _details}, ctx),
-        do: respond(ctx, "The operation is still under verification.")
-
-      def handle_result(_tag, _result, ctx), do: no_response(ctx)
+      def handle_result(tag, result, ctx), do: Spectre.Server.default_result(tag, result, ctx)
 
       def handle_skill(_skill, _event, ctx), do: no_response(ctx)
       def handle_activity(_identity, _event, ctx), do: ctx
@@ -386,6 +367,14 @@ defmodule Spectre.Server do
       else: 35_000
   end
 
+  @doc """
+  Submits an input to the AgentServer.
+
+  To answer an owned wait explicitly, pass `pending: {id, revision}` from its
+  `:waiting_input` event. Add `activity: ref` for a wait opened by an Activity.
+  The configured consumer or submitter can send an Activity reply. GAM consent
+  continues to use `decide/4` with its presentation reference.
+  """
   def input(server, input, opts \\ [])
 
   def input(server, input, skill: id) do
@@ -607,9 +596,30 @@ defmodule Spectre.Server do
     do: command(ctx, :call_actor, [actor, request], opts)
 
   def await_reply(ctx, id, opts \\ []), do: command(ctx, :await_reply, [id], opts)
-  @doc "Waits for a user answer in the foreground; actor replies use await_reply/3."
+
+  @doc "Waits for a user answer. Use `accept:` for matching ordinary input and `prompt:` for the question delivered with a targeted wait."
   def await_input(ctx, id, opts \\ []),
-    do: await_reply(ctx, id, Keyword.put(opts, :foreground, true))
+    do: await_reply(ctx, id, Spectre.Server.InputWait.options(opts))
+
+  @doc false
+  @spec default_result(term(), term(), Context.t()) :: Context.t()
+  def default_result(_tag, {:generated, %{text: text} = response}, ctx) do
+    case Map.get(response, :proposals, []) do
+      [] -> respond(ctx, text)
+      proposals -> Spectre.Server.Plan.start(ctx, proposals)
+    end
+  end
+
+  def default_result({Spectre.Server.Plan, remaining}, result, ctx),
+    do: Spectre.Server.Plan.continue(ctx, remaining, result)
+
+  def default_result(_tag, {:error, _}, ctx),
+    do: respond(ctx, "The request could not be completed.")
+
+  def default_result(_tag, {kind, _}, ctx) when kind in [:governed_unknown, :tool_unknown],
+    do: respond(ctx, "The operation is still under verification.")
+
+  def default_result(_tag, _result, ctx), do: no_response(ctx)
 
   def resolve_await(ctx, id, result), do: command(ctx, :resolve_await, [id, result], [])
   def confirm_pending(ctx, id), do: command(ctx, :confirm_pending, [id], [])

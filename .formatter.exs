@@ -27,6 +27,7 @@ spectre_locals_without_parens = [
   classifier: 3,
   embedding: 1,
   embedding: 2,
+  expose: 1,
   fail: 1,
   fail: 2,
   flow: 2,

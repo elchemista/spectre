@@ -62,6 +62,25 @@ defmodule Spectre.ServerPromptTest do
              Spectre.Prompt.resolve(agent, :answer, ctx, server_prompt_root: false)
   end
 
+  test "bundled Server prompt roots resolve inside the application's priv directory" do
+    agent = agent()
+    ctx = %Spectre.Context{agent: agent, state: %Spectre.State{}}
+    root = {:priv, :spectre, "templates/spectre.gen.agent"}
+
+    assert {:ok, path} =
+             Spectre.Prompt.resolve(agent, "server.ex.eex", ctx, server_prompt_root: root)
+
+    assert String.ends_with?(path, "priv/templates/spectre.gen.agent/server.ex.eex")
+
+    assert {:error, {:prompt_outside_root, _, _}} =
+             Spectre.Prompt.resolve(agent, "mix.exs", ctx,
+               server_prompt_root: {:priv, :spectre, ".."}
+             )
+
+    assert {:error, {:prompt_outside_root, _, _}} =
+             Spectre.Prompt.resolve(agent, "../outside.text.heex", ctx, server_prompt_root: root)
+  end
+
   @tag :tmp_dir
   test "mounted Skill keeps its root when a Server root is configured", %{tmp_dir: dir} do
     skill_root = Path.join(dir, "skill")

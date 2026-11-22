@@ -1,19 +1,21 @@
 defmodule Spectre.Integration do
   @moduledoc """
-  Builds the immutable service, tool and Activity declarations of a Stack package.
+  Builds the immutable service, tool, flow and Activity declarations of a Stack package.
 
-  Return the builder from `c:Spectre.Stack.Installable.integration/1`. Tool
-  and Activity names live under the installed package's local identifier.
+  Return the builder from `c:Spectre.Stack.Installable.integration/1`. Tools,
+  flows and Activities live under the installed package's local identifier.
 
       Spectre.Integration.new()
       |> Spectre.Integration.service(Spectre.Inference.Selector, MyApp.Selector)
       |> Spectre.Integration.tool(:read, MyApp.Documents, args: [id: :string])
+      |> Spectre.Integration.flow(:documents, MyApp.Documents.Flow)
       |> Spectre.Integration.activity(:research, MyApp.Research)
   """
 
+  alias Spectre.Flow.Port
   alias Spectre.Stack.{Tools, Value}
 
-  defstruct version: 1, services: %{}, tools: %{}, activities: %{}
+  defstruct version: 1, services: %{}, tools: %{}, activities: %{}, flows: %{}
 
   @type service :: {module(), keyword()}
   @type activity :: %{module: module(), options: keyword()}
@@ -22,7 +24,8 @@ defmodule Spectre.Integration do
             version: 1,
             services: %{optional(module()) => service()},
             tools: %{optional(atom()) => tool()},
-            activities: %{optional(atom()) => activity()}
+            activities: %{optional(atom()) => activity()},
+            flows: %{optional(atom()) => Port.binding()}
           }
 
   @tool_options [:args, :description, :access, :governed, :helper, :retry, :max_bytes]
@@ -71,6 +74,14 @@ defmodule Spectre.Integration do
     %{integration | tools: tools}
   end
 
+  @doc "Registers a flow that Agents can expose to their router."
+  @spec flow(t(), atom(), module()) :: t()
+  def flow(%__MODULE__{} = integration, name, module) do
+    validate_name!(name)
+    flows = put_unique!(integration.flows, name, Port.compile!(module), :flow)
+    %{integration | flows: flows}
+  end
+
   @doc """
   Declares an Activity type that can be started on demand.
 
@@ -96,6 +107,15 @@ defmodule Spectre.Integration do
     Enum.each(integration.services, &validate_service!/1)
     Enum.each(integration.tools, &validate_tool!/1)
     Enum.each(integration.activities, fn {name, binding} -> activity_binding!(name, binding) end)
+
+    flows = Map.get(integration, :flows, %{})
+    unless is_map(flows) and not is_struct(flows), do: invalid!("expected a map of flows")
+
+    Enum.each(flows, fn {name, binding} ->
+      validate_name!(name)
+      Port.validate!(binding)
+    end)
+
     integration
   end
 
@@ -169,7 +189,7 @@ defmodule Spectre.Integration do
   end
 
   @doc false
-  @spec execution_projection(t()) :: t() | nil
+  @spec execution_projection(t()) :: map() | nil
   def execution_projection(%__MODULE__{} = integration) do
     tools =
       Map.new(
@@ -177,8 +197,15 @@ defmodule Spectre.Integration do
             do: {name, Map.delete(tool, :public)}
       )
 
-    effective = %{integration | tools: tools}
-    if effective == new(), do: nil, else: effective
+    flows = Map.get(integration, :flows, %{})
+    effective = integration |> Map.put(:tools, tools) |> Map.put(:flows, flows)
+
+    cond do
+      effective == new() -> nil
+      # Existing integrations retain their execution digest until they declare a flow.
+      flows == %{} -> Map.delete(effective, :flows)
+      true -> effective
+    end
   end
 
   defp path(options) do

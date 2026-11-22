@@ -108,7 +108,9 @@ defmodule Spectre.Server.Command do
   end
 
   defp validate_args(:signal_activity, [target, signal], opts) do
-    with :ok <- activity_control(target, opts), do: Checkpoint.validate_value(signal)
+    with :ok <- activity_control(target, opts),
+         :ok <- Spectre.Server.ActivityBinding.validate_signal({:signal, signal}),
+         do: Checkpoint.validate_value(signal)
   end
 
   defp validate_args(:cancel_activity, [target], opts), do: activity_control(target, opts)
@@ -121,7 +123,11 @@ defmodule Spectre.Server.Command do
   end
 
   defp validate_args(:call_actor, [_actor, _request], opts), do: timeout(opts)
-  defp validate_args(:await_reply, [id], opts) when not is_nil(id), do: timeout(opts)
+
+  defp validate_args(:await_reply, [id], opts) when not is_nil(id) do
+    with :ok <- timeout(opts), do: Spectre.Server.InputWait.validate(opts)
+  end
+
   defp validate_args(:resolve_await, [id, _result], _opts) when not is_nil(id), do: :ok
 
   defp validate_args(kind, [id], opts)

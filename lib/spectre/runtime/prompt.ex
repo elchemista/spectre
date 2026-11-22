@@ -96,6 +96,8 @@ defmodule Spectre.Prompt do
   Resolves a prompt name or relative path under the active definition's prompt
   root.
 
+  A Server may use `{:priv, application, relative_directory}` for a bundled
+  prompt root resolved inside that application's priv directory at runtime.
   Policy prompts are looked up under `policies/<policy>/<prompt>.text.heex`.
   Resolved paths must remain inside the configured root.
   """
@@ -126,11 +128,25 @@ defmodule Spectre.Prompt do
   defp server_root(agent, scope, opts) do
     case Keyword.fetch(opts, :server_prompt_root) do
       {:ok, root} when is_binary(root) and byte_size(root) > 0 -> {:ok, root}
+      {:ok, {:priv, application, directory}} -> priv_prompt_root(application, directory)
       {:ok, nil} -> Definition.prompt_root(agent, scope)
       {:ok, invalid} -> {:error, {:invalid_server_prompt_root, invalid}}
       :error -> Definition.prompt_root(agent, scope)
     end
   end
+
+  defp priv_prompt_root(application, directory)
+       when is_atom(application) and is_binary(directory) do
+    with :relative <- Path.type(directory),
+         path when is_list(path) <- :code.priv_dir(application) do
+      contained_path(List.to_string(path), directory)
+    else
+      _invalid -> {:error, {:invalid_server_prompt_root, {:priv, application, directory}}}
+    end
+  end
+
+  defp priv_prompt_root(application, directory),
+    do: {:error, {:invalid_server_prompt_root, {:priv, application, directory}}}
 
   @spec do_render_asset(module(), atom() | String.t(), Spectre.Context.t() | map(), keyword()) ::
           {:ok, String.t()} | {:error, term()}

@@ -9,6 +9,7 @@ defmodule Spectre.Server.Router do
   """
 
   alias Spectre.Context
+  alias Spectre.Flow.Port
   alias Spectre.Input
   alias Spectre.Input.Pipeline, as: InputPipeline
   alias Spectre.Route
@@ -113,7 +114,7 @@ defmodule Spectre.Server.Router do
   end
 
   defp metadata(route, routing) do
-    %{
+    metadata = %{
       reason: nil,
       route: route,
       input: routing.input,
@@ -124,7 +125,17 @@ defmodule Spectre.Server.Router do
       traces: Enum.reverse(routing.traces),
       errors: Enum.reverse(routing.errors)
     }
+
+    if Port.owner(route),
+      do: Map.put(metadata, :params, params(route, routing.input)),
+      else: metadata
   end
+
+  defp params(%Route{strategy: :regex, rule: %{regex: regexes}}, %Input{text: text}) do
+    Enum.find_value(regexes, %{}, &Regex.named_captures(&1, text))
+  end
+
+  defp params(_route, _input), do: %{}
 
   defp unmatched_reason(route, routing) do
     if classification_completed?(routing.traces) do

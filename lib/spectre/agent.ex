@@ -43,10 +43,12 @@ defmodule Spectre.Agent do
   alias Spectre.Definition
   alias Spectre.Definition.Validator
   alias Spectre.Extension
+  alias Spectre.Flow.Port
   alias Spectre.Prompt.Operation
   alias Spectre.Router.Adapter.Compiler, as: RouterAdapterCompiler
   alias Spectre.Skill.Mount
   alias Spectre.Stack.Binding
+  alias Spectre.Stack.Value, as: StackValue
 
   @consumed_rule_option_keys [
     :regex,
@@ -108,6 +110,7 @@ defmodule Spectre.Agent do
     Module.register_attribute(module, :spectre_config, persist: false)
     Module.register_attribute(module, :spectre_named_classifiers, persist: false)
     Module.register_attribute(module, :spectre_rules, accumulate: true, persist: false)
+    Module.register_attribute(module, :spectre_exposed_flows, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_policies, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_after_actions, accumulate: true, persist: false)
     Module.register_attribute(module, :spectre_before_actions, accumulate: true, persist: false)
@@ -1006,6 +1009,26 @@ defmodule Spectre.Agent do
   end
 
   @doc """
+  Makes installed routes selectable by the Agent's router.
+
+  Use `expose :documents` for an installation with one flow. Select individual
+  scopes with `expose flows: [{:documents, :search}]` when an installation has
+  several. Exposed route labels must be unique within the Agent.
+  """
+  defmacro expose(declaration) do
+    caller = __CALLER__
+
+    if Module.get_attribute(caller.module, :spectre_kind) != :agent,
+      do: raise(ArgumentError, "expose requires an Agent")
+
+    exposures = declaration |> eval_action_arg(caller) |> flow_exposures!()
+
+    quote do
+      @spectre_exposed_flows unquote(Macro.escape(exposures))
+    end
+  end
+
+  @doc """
   Declares a global route that is checked before normal flow rules.
 
   Interrupts are useful for cancel, help, handoff, and other commands that
@@ -1229,13 +1252,15 @@ defmodule Spectre.Agent do
       |> reverse_attribute()
       |> then(&Extension.compile_all!(module, &1))
 
-    rules =
+    base_config = Module.get_attribute(module, :spectre_config) || []
+
+    local_rules =
       module
       |> Module.get_attribute(:spectre_rules)
       |> Enum.reverse()
       |> Enum.map(&compile_rule_constraints!(&1, extensions))
 
-    base_config = Module.get_attribute(module, :spectre_config) || []
+    rules = local_rules ++ compile_exposed_rules!(module, base_config[:stack])
     extension_defaults = Extension.merge_agent_config([], extensions)
 
     config =
@@ -1277,6 +1302,44 @@ defmodule Spectre.Agent do
       version: Module.get_attribute(module, :spectre_definition_version) || 1,
       change_surface: Module.get_attribute(module, :spectre_change_surface)
     }
+  end
+
+  defp flow_exposures!(flows: flows) when is_list(flows) do
+    Enum.map(flows, fn
+      {id, scope} when is_atom(scope) and scope not in [nil, true, false] ->
+        {installation_id!(id), {:scope, scope}}
+
+      invalid ->
+        raise ArgumentError, "invalid exposed flow #{inspect(invalid)}"
+    end)
+  end
+
+  defp flow_exposures!(id), do: [{installation_id!(id), :only}]
+
+  defp installation_id!(id) do
+    if StackValue.valid_id?(id) and id not in [true, false],
+      do: id,
+      else: raise(ArgumentError, "invalid exposed flow installation #{inspect(id)}")
+  end
+
+  defp compile_exposed_rules!(module, stack) do
+    exposures =
+      module
+      |> Module.get_attribute(:spectre_exposed_flows)
+      |> reverse_attribute()
+      |> Enum.concat()
+
+    for {id, scope, binding} <- Binding.compile_flows!(stack, exposures),
+        declaration <- binding.routes do
+      {label, opts} = Port.rule_options!(declaration)
+      opts = validated_rule_options!(opts)
+      path = [scope]
+      handler = {:server, {path, label}, [flow_port: {id, scope, binding.module}]}
+
+      label
+      |> rule_data(path, opts, handler, false)
+      |> RouterAdapterCompiler.preflight_rule_data!(:agent)
+    end
   end
 
   @spec compile_definition(module(), map()) :: Definition.t()
@@ -1580,14 +1643,20 @@ defmodule Spectre.Agent do
   end
 
   defp build_rule_from_opts(label, flow_path, opts, block, caller, extra) do
-    reject_training_opts!(opts)
-    opts = normalize_rule_options(opts)
+    opts = validated_rule_options!(opts)
+    handler = route_handler(block, flow_path, label, caller)
 
-    rule = %{
+    label
+    |> rule_data(flow_path, opts, handler, Keyword.fetch!(extra, :global?))
+    |> RouterAdapterCompiler.preflight_rule_data!(definition_scope(caller.module))
+  end
+
+  defp rule_data(label, flow_path, opts, handler, global?) do
+    %{
       label: label,
       flow: List.last(flow_path),
       flow_path: flow_path,
-      handler: route_handler(block, flow_path, label, caller),
+      handler: handler,
       regex: List.wrap(Keyword.get(opts, :regex, [])),
       bag: examples_from_opts(opts, :bag),
       jaro: examples_from_opts(opts, :jaro),
@@ -1596,12 +1665,15 @@ defmodule Spectre.Agent do
       learn: Keyword.get(opts, :learn, false),
       checks: rule_checks(opts),
       via: route_via(opts),
-      global?: Keyword.fetch!(extra, :global?),
+      global?: global?,
       injections: [],
       opts: Keyword.drop(opts, @consumed_rule_option_keys)
     }
+  end
 
-    RouterAdapterCompiler.preflight_rule_data!(rule, definition_scope(caller.module))
+  defp validated_rule_options!(opts) do
+    reject_training_opts!(opts)
+    normalize_rule_options(opts)
   end
 
   defp route_handler(nil, path, label, caller) do

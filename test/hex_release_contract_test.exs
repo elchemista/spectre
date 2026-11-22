@@ -2,7 +2,8 @@ defmodule SpectreHexReleaseContractTest do
   use ExUnit.Case, async: true
 
   @root Path.expand("..", __DIR__)
-  @release "0.4.0"
+  @release "0.4.1"
+  @published "0.4.0"
   @workflow Path.join(@root, ".github/workflows/ci.yml")
   @satellite_apps ~w(
     spectre_history
@@ -69,7 +70,7 @@ defmodule SpectreHexReleaseContractTest do
                          "SECURITY.md"
                        ] ++ Path.wildcard("docs/*.md", match_dot: true)
 
-  test "Hex package metadata describes the 0.4.0 release" do
+  test "Hex package metadata describes the package version" do
     config = Mix.Project.config()
     package = Keyword.fetch!(config, :package)
     docs = Keyword.fetch!(config, :docs)
@@ -204,7 +205,7 @@ defmodule SpectreHexReleaseContractTest do
              "#{Path.relative_to(source_path, @root)} couples core code to a satellite module"
     end
 
-    assert File.read!(Path.join(@root, "CHANGELOG.md")) =~ "## #{@release} — 2026-11-17"
+    assert File.read!(Path.join(@root, "CHANGELOG.md")) =~ "## #{@published} — 2026-11-17"
   end
 
   defp forbidden_satellite_aliases(source) do
@@ -238,13 +239,13 @@ defmodule SpectreHexReleaseContractTest do
     end
   end
 
-  test "installation examples target the package version and document source pins" do
+  test "installation examples target the published version and document source pins" do
     readme = File.read!(Path.join(@root, "README.md"))
     installation = File.read!(Path.join(@root, "docs/INSTALLATION.md"))
     llm_guide = File.read!(Path.join(@root, "LLMS.md"))
     changelog = File.read!(Path.join(@root, "CHANGELOG.md"))
 
-    dependency = ~s({:spectre, "~> #{@release}"})
+    dependency = ~s({:spectre, "~> #{@published}"})
     assert readme =~ dependency
     assert installation =~ dependency
     assert llm_guide =~ "Spectre 0.4 guide"

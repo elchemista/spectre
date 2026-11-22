@@ -20,7 +20,7 @@ defmodule Spectre.Stack.Installable do
   requires the application to enable the operation under its declared authority.
 
   Optional `c:integration/1` returns `Spectre.Integration` declarations for
-  services, tools and on-demand Activities. It receives the same compiled
+  services, tools, opt-in flows and on-demand Activities. It receives the same compiled
   configuration as `c:tools/1` and `c:effects/1`.
 
   `c:child_specs/2`, when implemented, runs only when a caller explicitly starts

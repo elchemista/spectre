@@ -1,6 +1,6 @@
-# Spectre public API — 0.4.0
+# Spectre public API — 0.4.1
 
-This file is the normative public API manifest for Spectre `0.4.0`. It retains
+This file is the normative public API manifest for Spectre `0.4.1`. It retains
 the recoverable conversational, operational, inference, streaming, receipt,
 and determinism surfaces and adds the native Router Adapter behaviour,
 privacy-scoped request structs, and executable Adapter conformance.
@@ -71,6 +71,7 @@ Mix project version.
 - `Spectre.ActionProtection`
   - functions: `protected_by/2`, `protected_by/3`
 - `Spectre.Agent`
+  - macros: `expose/1`
   - macros: `pre_route_handler/1`, `pre_route_handler/2`, `pre_route_handlers/1`
   - macros: `classifier/3`, `intent_dataset/1`, `intent_dataset/2`
   - macros: `__using__/1`, `act/1`, `act/2`, `action/1`, `action/2`, `action_planner/1`, `action_planner/2`, `action_provider/2`, `action_provider/3`, `actions/1`, `actions/2`, `actions/3`, `after_action/2`, `approval_pending_reply/1`, `approval_pending_reply/2`, `arbitrator/1`, `arbitrator/2`, `ask/1`, `ask/2`, `before_action/2`, `call_operation/1`, `call_operation/2`, `checkpoint_store/1`, `checkpoint_store/2`, `classifier/1`, `classifier/2`, `embedding/1`, `embedding/2`, `fail/1`, `fail/2`, `flow/2`, `flow/3`, `history/1`, `history/2`, `idle/1`, `inject/1`, `inject/2`, `input_pipeline/1`, `interrupt/2`, `interrupt/3`, `journal/1`, `journal/2`, `memory/1`, `model/1`, `model/2`, `operation/2`, `operation/3`, `policy/2`, `protect/1`, `protect/2`, `reason/1`, `reason/2`, `reply/1`, `reply/2`, `requires_action/1`, `requires_action/2`, `requires_operation/1`, `requires_operation/2`, `requires_tool/1`, `requires_tool/2`, `route_operation_events/0`, `route_operation_events/1`, `router/1`, `run/1`, `run/2`, `shutdown/1`, `skill/1`, `skill/2`, `state/1`, `turn_handler/1`, `turn_handler/2`, `turn_handlers/1`, `work/1`, `work/2`
@@ -238,6 +239,10 @@ Mix project version.
   - functions: `admit/2`, `admitted?/1`, `classes/0`, `decode/1`, `encode/1`, `from_data/1`, `intent_digest/1`, `new/1`, `new!/1`, `schema_version/0`, `to_data/1`
 - `Spectre.Flow.Constraint`
   - functions: `filter_and_order/2`, `match?/2`
+- `Spectre.Flow.Port`
+  - functions: `on/2`
+  - macros: `__using__/1`
+  - callbacks: `routes/0`, `handle_flow/3`, `handle_result/3`
 - `Spectre.Identity`
   - functions: `idempotency_key/1`, `uuid7/0`
 - `Spectre.Inference`
@@ -554,7 +559,8 @@ Mix project version.
   - functions: `new/3`, `scope/1`
 - `Spectre.Stack`
   - functions: `config/2`, `definition/1`, `installation/2`, `resolve/3`, `start_link/1`, `start_link/2`
-  - macros: `__using__/0`, `__using__/1`, `install/1`, `install/2`, `install/3`
+  - functions: `service/2`, `tool_metadata/2`
+  - macros: `__using__/0`, `__using__/1`, `activity/2`, `activity/3`, `install/1`, `install/2`, `install/3`
 - `Spectre.Stack.Binding`
   - functions: `config/2`, `installation/2`, `refs/1`
 - `Spectre.Stack.Contract.V1`
@@ -571,7 +577,10 @@ Mix project version.
   - functions: `contract_version/0`, `verify/1`, `verify/2`, `verify!/1`, `verify!/2`
   - macros: `__using__/1`
   - callbacks: `child_specs/2`, `compile/3`, `manifest/0`
-  - callbacks: `effects/1`, `tools/1`
+  - callbacks: `effects/1`, `integration/1`, `tools/1`
+
+- `Spectre.Integration`
+  - functions: `new/0`, `service/3`, `service/4`, `tool/3`, `tool/4`, `flow/3`, `activity/3`, `activity/4`
 
 - `Spectre.Stack.Installation`
   - functions: `from_extension_mount/1`, `from_provider_mount/1`
@@ -623,15 +632,20 @@ Mix project version.
 
 ## Agent/Server and GAM additions in 0.4
 
+- `Spectre.Activity`
+  - functions: `complete/2`, `fail/2`
+  - macros: `__using__/1`
+  - callbacks: `handle_start/2`, `handle_signal/2`
 - `Spectre.Server`
   - functions: `reset/1`, `reset/2`, `recover_storage/2`, `deliver/5`
   - functions: `approval/2`, `approval_inbox/1`, `approval_inbox/2`, `approval_decide/3`, `approval_presented/2`, `receive_approval/2`, `presented/2`, `decide/4`, `gam_view/1`, `gam_inspect/2`
   - functions: `get_pending/2`, `put_private/2`, `put_private/3`, `get_private/2`, `get_private/3`, `delete_private/2`, `close_pending/2`, `close_pending/3`, `close_pending_after/3`, `close_pending_after/4`, `cancel_pending_close/2`, `cancel_pending_close/3`
   - functions: `await_input/2`, `await_input/3`
+  - functions: `activities/1`, `activities/2`, `activity/2`, `activity/3`, `call_tool/3`, `call_tool/4`, `start_activity/3`, `start_activity/4`, `signal_activity/3`, `signal_activity/4`, `cancel_activity/2`, `cancel_activity/3`
   - functions: `assign/2`, `assign/3`, `await_reply/2`, `await_reply/3`, `call_actor/3`, `call_actor/4`, `cancel/1`, `child_spec/1`, `classify/2`, `classify/3`, `confirm_pending/2`, `deliver/4`, `explain_pending/2`, `generate/2`, `generate/3`, `input/2`, `input/3`, `no_response/1`, `propose/3`, `propose/4`, `reject_pending/2`, `resolve_await/3`, `respond/2`, `respond/3`, `resume_pending/2`, `route_current_input/1`, `route_current_input/2`, `start_link/1`, `status/1`
   - macros: `__using__/1`
   - callbacks: `handle_approval_inbox/2`, `code_change/3`, `format_status/1`, `handle_call/3`, `handle_cast/2`, `handle_continue/2`, `handle_flow/3`, `handle_info/2`, `handle_pending/3`, `handle_result/3`, `init/2`, `terminate/2`
-  - callbacks: `assigns_schema/0`, `continuation_contracts/0`, `handle_action/2`, `handle_skill/3`
+  - callbacks: `assigns_schema/0`, `continuation_contracts/0`, `handle_action/2`, `handle_activity/3`, `handle_skill/3`
 
 - `Spectre.Server.Context`
 

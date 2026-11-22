@@ -106,9 +106,8 @@ defmodule Spectre.Server.Checkpoint do
          {:ok, projection} <- migrate_if_needed(saved, state),
          :ok <- validate(projection, state),
          :ok <- Spectre.Server.Contracts.validate_assigns(state.server, projection.assigns),
+         projection = restore_projection(state.agent, projection),
          :ok <- Spectre.Server.Contracts.validate_retained(state.server, projection) do
-      projection = restore_projection(state.agent, projection)
-
       migrated? =
         Map.get(saved, :definition_fingerprint) != Map.get(projection, :definition_fingerprint)
 
@@ -121,6 +120,7 @@ defmodule Spectre.Server.Checkpoint do
   defp restore_state(state, projection, revision) do
     recovering = recovering_pending_ids(projection.outbox, projection.pending)
     foreground = restore_foreground(state, projection.pending, recovering)
+    foreground = foreground || restore_input_focus(projection.pending)
 
     pending =
       Map.new(projection.pending, fn {id, pending} ->
@@ -171,6 +171,16 @@ defmodule Spectre.Server.Checkpoint do
   end
 
   defp restore_foreground(_state, _pending, _recovering), do: nil
+
+  defp restore_input_focus(pending) do
+    Enum.find_value(pending, fn
+      {id, %{status: :foreground, input_wait: wait}} ->
+        if Spectre.Server.InputWait.live?(wait), do: id
+
+      _ ->
+        nil
+    end)
+  end
 
   defp recovering_pending_ids(outbox, pending) do
     Enum.reduce(outbox, MapSet.new(), fn {_command_id, entry}, ids ->
@@ -468,7 +478,15 @@ defmodule Spectre.Server.Checkpoint do
     snapshot = route_snapshot(Map.get(routing, :route), Map.get(routing, :route_key))
 
     routing =
-      Map.take(routing, [:route_key, :protected, :reason, :scope, :input, :previous_route_keys])
+      Map.take(routing, [
+        :route_key,
+        :protected,
+        :reason,
+        :scope,
+        :input,
+        :previous_route_keys,
+        :params
+      ])
 
     routing = if snapshot, do: Map.put(routing, :checkpoint_route, snapshot), else: routing
 

@@ -13,6 +13,7 @@ defmodule Spectre.Server.Runtime do
   """
   use GenServer
 
+  alias Spectre.Flow.Port, as: FlowPort
   alias Spectre.Server.GAM.Managed
 
   alias Spectre.Server.{
@@ -24,6 +25,7 @@ defmodule Spectre.Server.Runtime do
     Delivery,
     Failure,
     Inbox,
+    InputWait,
     Operations,
     PendingLifecycle,
     Reset,
@@ -687,6 +689,18 @@ defmodule Spectre.Server.Runtime do
     end
   end
 
+  def handle_call({__MODULE__, :input, value, opts}, {caller, _}, state)
+      when is_list(opts) and length(opts) == 2 do
+    case Enum.sort(opts) do
+      [{:activity, ref}, {:pending, {id, revision} = target}]
+      when is_binary(ref) and is_binary(id) and is_integer(revision) and revision > 0 ->
+        accept_activity_input(state, caller, ref, target, value)
+
+      _ ->
+        {:reply, {:error, :unsupported_input_options}, state}
+    end
+  end
+
   def handle_call({__MODULE__, :input, value, opts}, {caller, _}, state) do
     input = Spectre.Input.new(value)
 
@@ -763,7 +777,8 @@ defmodule Spectre.Server.Runtime do
         (caller == state.consumer or caller in Keyword.get(state.opts, :submitters, []))
 
   defp request_activity_control(state, caller, target, action, opts) do
-    with :ok <- Checkpoint.validate_value(action),
+    with :ok <- ActivityBinding.validate_signal(action),
+         :ok <- Checkpoint.validate_value(action),
          nil <- state.reset_request,
          {:ok, request} <-
            activity_query(
@@ -777,6 +792,21 @@ defmodule Spectre.Server.Runtime do
     else
       {:error, _} = error -> {:reply, error, state}
       _ -> {:reply, {:error, :activity_busy}, state}
+    end
+  end
+
+  defp accept_activity_input(state, caller, ref, target, value) do
+    input = Spectre.Input.new(value)
+
+    with true <- activity_caller?(state, caller),
+         {:ok, {owner, _}} <- ActivityBinding.owner(state, :existing),
+         :ok <- Activities.validate_input(owner, ref, target),
+         :ok <- Spectre.Input.validate(input) do
+      accept_input(state, input, nil, nil, {:activity, ref, target})
+    else
+      {:error, _} = error -> {:reply, error, state}
+      {:ok, nil} -> {:reply, {:error, :stale_pending}, state}
+      false -> {:reply, {:error, :activity_input_not_authorized}, state}
     end
   end
 
@@ -1041,7 +1071,17 @@ defmodule Spectre.Server.Runtime do
         {__MODULE__, control, :gam_storage_recovered, recovery},
         %{control: control} = state
       ) do
-    {:noreply, storage_recovered(state, recovery)}
+    {generation, recovery} = Map.pop(recovery, :activity_generation)
+    state = storage_recovered(state, recovery)
+
+    case state.activity_connection do
+      {owner, _} when is_reference(generation) ->
+        Activities.resume_delivery(owner, control, generation)
+        {:noreply, %{state | activity_connection: {owner, generation}}}
+
+      _ ->
+        {:noreply, state}
+    end
   end
 
   def handle_info({__MODULE__, :skill_storage_recovered, parent, token, recovery}, state) do
@@ -1152,9 +1192,24 @@ defmodule Spectre.Server.Runtime do
     {:noreply, pump(state)}
   end
 
-  def handle_info({Activities, control, :lifecycle, identity, event}, %{control: control} = state) do
-    notify(state, {:activity, identity, event})
-    {:noreply, conversation(state, :handle_activity, [identity, event], nil) |> finish()}
+  def handle_info(
+        {Activities, control, :lifecycle, coordinator, id, identity, event},
+        %{control: control} = state
+      ) do
+    state =
+      if Map.has_key?(state.seen_events, id) do
+        state
+      else
+        notify(state, {:activity, identity, event})
+
+        state
+        |> Inbox.mark_seen(id)
+        |> conversation(:handle_activity, [identity, event], nil)
+        |> finish()
+      end
+
+    Activities.acknowledge(coordinator, control, id)
+    {:noreply, state}
   end
 
   def handle_info(
@@ -1195,9 +1250,21 @@ defmodule Spectre.Server.Runtime do
     {:stop, :normal, state}
   end
 
+  def handle_info(
+        {Activities, token, :reply_input, revision, target, input},
+        %{activity: %{token: token, revision: revision, ready: true, paused: false}} = state
+      ) do
+    case InputWait.find(state.pending, target) do
+      %{id: id} -> {:noreply, resolve_input_wait(state, id, input, nil) |> finish()}
+      nil -> {:noreply, state}
+    end
+  end
+
   def handle_info({Activities, token, :stop}, %{activity: %{token: token}} = state),
     do: {:stop, :normal, state}
 
+  def handle_info({Activities, _, :lifecycle, _, _, _, _}, state), do: {:noreply, state}
+  def handle_info({Activities, _, :reply_input, _, _, _}, state), do: {:noreply, state}
   def handle_info({Activities, _, _, _}, state), do: {:noreply, state}
   def handle_info({Activities, _, _, _, _}, state), do: {:noreply, state}
 
@@ -1317,14 +1384,29 @@ defmodule Spectre.Server.Runtime do
   defp defer_activity(state, message),
     do: update_in(state.activity.deferred, &[message | &1])
 
+  defp finish_activity(state, result) do
+    if ActivityBinding.finish(state, result) != :superseded,
+      do: send(self(), {Activities, state.activity.token, :stop})
+  end
+
   defp resume_activity(%{activity: activity} = state, revision) do
     state =
       if revision == activity.revision,
         do: state,
-        else: Enum.reduce(Map.keys(state.pending), state, &delete_pending(&2, &1))
+        else: retire_activity_pending(state)
 
     Enum.each(Enum.reverse(activity.deferred), &send(self(), &1))
     %{state | activity: %{activity | revision: revision, paused: false, deferred: []}}
+  end
+
+  defp retire_activity_pending(state) do
+    {waits, workers} = Enum.split_with(state.workers, fn {_, w} -> w.kind == :await_reply end)
+    Enum.each(waits, fn {_, worker} -> cancel_timer(worker.timer) end)
+    outbox = Map.drop(state.outbox, Enum.map(waits, fn {_, worker} -> worker.command_id end))
+
+    Enum.reduce(Map.keys(state.pending), %{state | workers: Map.new(workers), outbox: outbox}, fn
+      id, state -> delete_pending(state, id)
+    end)
   end
 
   @spec defer_reset(map(), tuple()) :: map()
@@ -1556,7 +1638,7 @@ defmodule Spectre.Server.Runtime do
     else
       event =
         input_event(state, input, dispatch, invocation)
-        |> Map.put(:target_pending, target)
+        |> target_input(target)
         |> Map.put(:consent_proof, proof)
         |> Map.put(
           :consent_source_digest,
@@ -1566,6 +1648,11 @@ defmodule Spectre.Server.Runtime do
       acquire_input_event(state, event, invocation, waiting?, queued? and not busy?)
     end
   end
+
+  defp target_input(event, {:activity, ref, pending}),
+    do: Map.merge(event, %{target_pending: nil, target_activity: {ref, pending}})
+
+  defp target_input(event, pending), do: Map.put(event, :target_pending, pending)
 
   defp acquire_input_event(state, event, invocation, waiting?, pump?) do
     case bind_consent_event(state, event) do
@@ -1915,11 +2002,19 @@ defmodule Spectre.Server.Runtime do
   defp validate_pending_target(_state, nil), do: :ok
 
   defp validate_pending_target(state, {id, revision}) do
-    case Map.get(state.pending, id) do
-      %{revision: ^revision, status: :foreground} when state.foreground == id -> :ok
-      _ -> {:error, :stale_pending}
+    case InputWait.find(state.pending, {id, revision}) do
+      %{input_wait: wait} -> if InputWait.live?(wait), do: :ok, else: {:error, :stale_pending}
+      nil -> validate_legacy_pending(state, id, revision)
     end
   end
+
+  defp validate_legacy_pending(%{foreground: id, pending: pending}, id, revision) do
+    if match?(%{revision: ^revision, status: :foreground}, pending[id]),
+      do: :ok,
+      else: {:error, :stale_pending}
+  end
+
+  defp validate_legacy_pending(_state, _id, _revision), do: {:error, :stale_pending}
 
   defp begin_input(state, event) do
     history =
@@ -1941,10 +2036,15 @@ defmodule Spectre.Server.Runtime do
 
   defp prepared_input(state, %{delegated: true} = event), do: route(state, event)
 
-  defp prepared_input(state, %{target_pending: {_id, _revision}} = event),
-    do: after_interrupt(state, event)
+  defp prepared_input(state, %{target_pending: {_id, _revision} = target} = event) do
+    if InputWait.find(state.pending, target),
+      do: prepare_interrupt(state, event),
+      else: after_interrupt(state, event)
+  end
 
-  defp prepared_input(state, event) do
+  defp prepared_input(state, event), do: prepare_interrupt(state, event)
+
+  defp prepare_interrupt(state, event) do
     worker(state, :interrupt, nil, event, [], fn ->
       Spectre.Server.PreRoute.interrupt(state.agent, event.input, service_context(state, event))
     end)
@@ -1963,9 +2063,35 @@ defmodule Spectre.Server.Runtime do
 
   @spec dispatch_pending_input(map(), map()) :: map()
   defp dispatch_pending_input(state, event) do
+    result =
+      case InputWait.find(state.pending, Map.get(event, :target_pending)) do
+        %{id: id} -> resolve_input_wait(state, id, event.input, event)
+        nil -> dispatch_focused_input(state, event)
+      end
+
+    finish(result)
+  end
+
+  defp dispatch_focused_input(state, %{target_activity: target} = event) do
+    case relay_activity_input(state, target, event.input) do
+      :ok -> :ok
+      error -> notify(state, {:activity_input_error, event.id, error})
+    end
+
+    state
+  end
+
+  defp dispatch_focused_input(state, event) do
     case Map.get(state.pending, state.foreground) do
       nil ->
-        route(state, event)
+        if relay_activity_input(state, nil, event.input) == :ok,
+          do: state,
+          else: route(state, event)
+
+      %{id: id, input_wait: %{accept: accept} = wait} ->
+        if InputWait.live?(wait) and InputWait.matches?(accept, event.input.text),
+          do: resolve_input_wait(state, id, event.input, event),
+          else: state |> suspend_pending(id) |> route(event)
 
       pending ->
         event =
@@ -1976,8 +2102,49 @@ defmodule Spectre.Server.Runtime do
 
         conversation(state, :handle_pending, [pending, event.input], event)
     end
-    |> finish()
   end
+
+  defp relay_activity_input(state, target, input) do
+    case ActivityBinding.owner(state, :existing) do
+      {:ok, {owner, _}} -> Activities.input(owner, target, input)
+      _ -> :unmatched
+    end
+  end
+
+  defp resolve_input_wait(state, id, input, event) do
+    command = %Command{kind: :resolve_await, args: [id, {:ok, %{input | raw: nil}}]}
+    execute(state, command, event)
+  end
+
+  defp configure_input_wait(state, %{status: :foreground} = pending, opts, event) do
+    if state.activity || FlowPort.owner(flow_route(event)) || opts[:accept] || opts[:prompt] do
+      pending = if opts[:accept], do: pending, else: %{pending | status: :background}
+      InputWait.put(pending, state.active_command, opts)
+    else
+      pending
+    end
+  end
+
+  defp configure_input_wait(_state, pending, _opts, _event), do: pending
+
+  defp publish_input_wait(state, %{input_wait: wait}) do
+    state = Checkpoint.save(state)
+
+    case state.activity do
+      %{revision: revision} -> ActivityBinding.report(state, {:waiting_input, revision, wait})
+      nil -> notify(state, {:waiting_input, InputWait.public(wait)})
+    end
+
+    state
+  end
+
+  defp publish_input_wait(state, _pending), do: state
+
+  defp inherit_flow_route(event, %{routing: routing} = origin) do
+    if FlowPort.owner(flow_route(origin)), do: %{event | routing: routing}, else: event
+  end
+
+  defp inherit_flow_route(event, _origin), do: event
 
   defp route(state, %{pre_route_done: true} = event) do
     worker(state, :route, nil, event, [], fn ->
@@ -2348,13 +2515,13 @@ defmodule Spectre.Server.Runtime do
     if callback == :handle_result do
       [tag, result] = args
 
-      Spectre.Server.Contracts.validate_result!(state.server, tag, result, %{
+      Spectre.Server.Contracts.validate_result!(callback_owner(state, event), tag, result, %{
         interaction_id: event_id(event),
         command_id: get_in(state.inbox, [state.processing_result, :worker, :command_id])
       })
     end
 
-    returned = apply(state.server, callback, args ++ [ctx])
+    returned = call_conversation(state, callback, args, event, ctx)
     validate_context!(returned, dispatch)
 
     case expired_schedule(state, returned.commands) do
@@ -2362,6 +2529,36 @@ defmodule Spectre.Server.Runtime do
       _pending -> returned
     end
   end
+
+  defp call_conversation(state, :handle_flow, args, event, ctx) do
+    route = flow_route(event)
+
+    case FlowPort.owner(route) do
+      {_, _, module} -> module.handle_flow(route.label, ctx.input, ctx)
+      nil -> apply(state.server, :handle_flow, args ++ [ctx])
+    end
+  end
+
+  defp call_conversation(state, :handle_result, [tag, result], event, ctx) do
+    module = callback_owner(state, event)
+
+    if function_exported?(module, :handle_result, 3),
+      do: module.handle_result(tag, result, ctx),
+      else: Spectre.Server.default_result(tag, result, ctx)
+  end
+
+  defp call_conversation(state, callback, args, _event, ctx),
+    do: apply(state.server, callback, args ++ [ctx])
+
+  defp callback_owner(state, event) do
+    case FlowPort.owner(flow_route(event)) do
+      {_, _, module} -> module
+      nil -> state.server
+    end
+  end
+
+  defp flow_route(%{routing: %{route: %Spectre.Route{} = route}}), do: route
+  defp flow_route(_event), do: nil
 
   defp prepare_current_conversation(state, returned, event) do
     case stale_confirmation(state, returned.commands, event) do
@@ -2419,8 +2616,7 @@ defmodule Spectre.Server.Runtime do
 
   defp quarantine_callback(state, callback, event, reason) do
     if state.activity do
-      ActivityBinding.report(state, {:failed, :activity_callback_failed})
-      send(self(), {Activities, state.activity.token, :stop})
+      finish_activity(state, {:failed, :activity_callback_failed})
     end
 
     state = discard_quarantined_following(state)
@@ -2576,7 +2772,11 @@ defmodule Spectre.Server.Runtime do
   defp prepare_acquisition(state, returned, dispatch) do
     validate_context!(returned, dispatch)
     Spectre.Server.Contracts.validate_assigns!(state.server, returned.assigns)
-    Spectre.Server.Contracts.validate_commands!(state.server, returned.commands)
+
+    Spectre.Server.Contracts.validate_commands!(
+      callback_owner(state, dispatch.event),
+      returned.commands
+    )
 
     case expired_schedule(state, returned.commands) do
       nil ->
@@ -2609,6 +2809,7 @@ defmodule Spectre.Server.Runtime do
     normalized =
       Enum.map(returned.commands, fn command ->
         command
+        |> scope_input_wait(dispatch.event)
         |> then(&Tool.normalize(state, &1, tool_event))
         |> then(&ActivityBinding.authorize(state, &1))
         |> then(fn {normalized, origin} ->
@@ -2653,7 +2854,7 @@ defmodule Spectre.Server.Runtime do
           Map.merge(
             %{
               command: command,
-              event: dispatch.event,
+              event: continuation_event(state, command, dispatch.event),
               execution_started: false,
               explicit_on_result: Keyword.has_key?(original.opts, :on_result)
             },
@@ -2668,6 +2869,33 @@ defmodule Spectre.Server.Runtime do
     validate_tool_state!(state)
     {:prepared, state, entries ++ released}
   end
+
+  defp scope_input_wait(%Command{kind: :await_reply, args: [id], opts: opts} = cmd, event) do
+    case FlowPort.owner(flow_route(event)) do
+      {installation, scope, _} ->
+        if Keyword.get(opts, :foreground, false) do
+          %{
+            cmd
+            | args: [{:flow, installation, scope, id}],
+              opts: Keyword.put_new(opts, :on_result, id)
+          }
+        else
+          cmd
+        end
+
+      nil ->
+        cmd
+    end
+  end
+
+  defp scope_input_wait(cmd, _event), do: cmd
+
+  defp continuation_event(state, %Command{kind: kind, args: [id]}, event)
+       when kind in [:confirm_pending, :reject_pending, :explain_pending, :resume_pending] and
+              not is_nil(event),
+       do: inherit_flow_route(event, get_in(state.pending, [id, :origin]))
+
+  defp continuation_event(_state, _command, event), do: event
 
   defp commit_acquisition({:prepared, state, entries}),
     do: execute_entries(Checkpoint.save(state), entries)
@@ -2893,8 +3121,7 @@ defmodule Spectre.Server.Runtime do
   defp execute(state, %Command{kind: kind, args: [value]}, _event)
        when kind in [:complete_activity, :fail_activity] do
     status = if kind == :complete_activity, do: :completed, else: :failed
-    ActivityBinding.report(state, {status, value})
-    send(self(), {Activities, state.activity.token, :stop})
+    finish_activity(state, {status, value})
     state
   end
 
@@ -2938,6 +3165,8 @@ defmodule Spectre.Server.Runtime do
         if(timeout == :infinity, do: nil, else: System.system_time(:millisecond) + timeout)
     }
 
+    pending = configure_input_wait(state, pending, opts, event)
+
     ref = make_ref()
 
     timer =
@@ -2954,15 +3183,18 @@ defmodule Spectre.Server.Runtime do
       explicit_on_result: pending.explicit_on_result,
       event: event,
       pending_id: id,
-      command_id: state.active_command
+      command_id: state.active_command,
+      input_wait: Map.has_key?(pending, :input_wait)
     }
 
-    %{
+    state = %{
       state
       | pending: Map.put(state.pending, id, pending),
         foreground: if(pending.status == :foreground, do: id, else: state.foreground),
         workers: Map.put(state.workers, ref, worker)
     }
+
+    publish_input_wait(state, pending)
   end
 
   defp execute(state, %Command{kind: :resolve_await, args: [id, result]}, event) do
@@ -2975,7 +3207,10 @@ defmodule Spectre.Server.Runtime do
       {ref, worker} ->
         cancel_timer(worker.timer)
         state = %{state | workers: Map.delete(state.workers, ref)}
-        worker = if event, do: %{worker | event: event}, else: worker
+
+        worker =
+          if event, do: %{worker | event: inherit_flow_route(event, worker.event)}, else: worker
+
         receive_result(state, worker, result)
     end
   end
@@ -3347,6 +3582,9 @@ defmodule Spectre.Server.Runtime do
   defp delete_pending(state, id) do
     with %{presentation: %{ref: ref}} <- state.pending[id],
          do: ActivityBinding.report(state, {:closed, ref})
+
+    with %{input_wait: %{id: ref}} <- state.pending[id],
+         do: ActivityBinding.report(state, {:closed_input, ref})
 
     state = cancel_pending_timer(state, id)
     state = cancel_close_timer(state, id)
@@ -3836,7 +4074,6 @@ defmodule Spectre.Server.Runtime do
 
     case result do
       {:governed, %{act: act}} when not is_nil(act) ->
-        ActivityBinding.report(state, {:effect, result})
         conversation(state, :handle_signal, [{:effect, result}], nil)
 
       {:pending, data} ->
@@ -3978,6 +4215,8 @@ defmodule Spectre.Server.Runtime do
 
   defp tool_failure(%{kind: kind} = worker, reason) when kind in [:delegate, :delegate_route],
     do: {:skill_unknown, %{command_id: Map.get(worker, :command_id), reason: reason}}
+
+  defp tool_failure(%{kind: :await_reply, input_wait: true}, :timeout), do: {:error, :expired}
 
   defp tool_failure(_worker, reason), do: {:error, reason}
 
@@ -4429,7 +4668,8 @@ defmodule Spectre.Server.Runtime do
       tag: pending.on_result,
       event: pending.origin,
       pending_id: pending.id,
-      command_id: command_id
+      command_id: command_id,
+      input_wait: Map.has_key?(pending, :input_wait)
     }
 
     %{state | workers: Map.put(state.workers, ref, worker)}

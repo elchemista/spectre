@@ -41,6 +41,52 @@ defmodule Spectre.Stack.Binding do
   def selected_service(%Spectre.Definition{config: config}, role),
     do: Map.get(Keyword.get(config, :integration_services, %{}), role)
 
+  @doc false
+  @spec compile_flows!(module() | nil, [tuple()]) :: [
+          {term(), atom(), Spectre.Flow.Port.binding()}
+        ]
+  def compile_flows!(_stack, []), do: []
+
+  def compile_flows!(nil, _exposures),
+    do: raise(ArgumentError, "expose requires an Agent Stack")
+
+  def compile_flows!(stack, exposures) do
+    definition = StackDefinition.fetch!(stack)
+
+    flows =
+      Enum.map(exposures, fn {id, scope} ->
+        case StackDefinition.installation(definition, id) do
+          {:ok, installation} -> {id, installation} |> select_flow!(scope)
+          {:error, _reason} -> raise ArgumentError, "unknown flow installation #{inspect(id)}"
+        end
+      end)
+
+    keys = Enum.map(flows, fn {id, scope, _binding} -> {id, scope} end)
+
+    case keys -- Enum.uniq(keys) do
+      [] -> flows
+      [duplicate | _] -> raise ArgumentError, "duplicate exposed flow #{inspect(duplicate)}"
+    end
+  end
+
+  defp select_flow!({id, installation}, :only) do
+    case Map.to_list(installation_flows(installation)) do
+      [{scope, binding}] -> {id, scope, binding}
+      [] -> raise ArgumentError, "installation #{inspect(id)} has no flows"
+      _ -> raise ArgumentError, "multiple flows in #{inspect(id)}. Use `expose flows: [...]`."
+    end
+  end
+
+  defp select_flow!({id, installation}, {:scope, scope}) do
+    case Map.fetch(installation_flows(installation), scope) do
+      {:ok, binding} -> {id, scope, binding}
+      :error -> raise ArgumentError, "unknown installed flow #{inspect({id, scope})}"
+    end
+  end
+
+  defp installation_flows(%Installation{adapters: %{integration: %{flows: flows}}}), do: flows
+  defp installation_flows(_installation), do: %{}
+
   defp service_providers(nil), do: %{}
 
   defp service_providers(stack) do

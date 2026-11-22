@@ -341,7 +341,7 @@ defmodule Spectre.Server.ActivityFenceTest do
     {owner, control, _opts} = start_managed(:memory, nil)
     {:ok, {coordinator, ^control}} = Managed.activity_owner(owner, :existing)
     {store, faults, domain_ref} = fail_fence_store(owner)
-    ref = start_waiting(coordinator)
+    ref = start_waiting(coordinator, control)
     key = {:spectre_activity_fence, domain_ref, ref}
 
     :ets.insert(faults, {:compare_and_swap, :lose_acknowledgement})
@@ -386,7 +386,7 @@ defmodule Spectre.Server.ActivityFenceTest do
     assert {:error, :invalid_activity_ref} = Managed.register_activity(owner, control, "")
     assert {:error, :invalid_activity_ref} = Managed.retire_activity(owner, control, "")
 
-    ref = start_waiting(coordinator)
+    ref = start_waiting(coordinator, control)
     assert :ok = Managed.register_activity(owner, control, ref)
     {pending, proof} = prepare_consent(owner, control, ref)
     context = context(ref, 0, Spectre.Input.new("confermo")) |> Map.put(:consent_proof, proof)
@@ -424,12 +424,13 @@ defmodule Spectre.Server.ActivityFenceTest do
     refute_received {Managed, ^owner, {:presentation, _}}
   end
 
-  defp start_waiting(coordinator) do
+  defp start_waiting(coordinator, generation) do
     assert {:ok, ref} =
              Activities.start(
                coordinator,
                Spectre.Identity.uuid7(),
-               {WaitingChild, [observer: self()]}
+               {WaitingChild, [observer: self()]},
+               generation: generation
              )
 
     assert_receive {:activate, ^ref}

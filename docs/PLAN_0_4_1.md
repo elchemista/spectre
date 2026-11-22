@@ -1,6 +1,6 @@
 # Spectre 0.4.1 implementation plan
 
-**Proposed design · revised after the ergonomics review.** Build on Spectre
+**Implementation sequence and proposed APIs.** Build on Spectre
 0.4.0's **Stack → Agent → Server** architecture, with one GAM Domain for each
 governed agent. The Elixir examples show proposed APIs.
 
@@ -11,9 +11,11 @@ tool call can all complete with zero Activities.
 
 | Public API | What developers write |
 | --- | --- |
-| `Spectre.Stack.Installable` and `Spectre.Integration` | A package declares the services, tools, flows or activities it offers. An application installs it once. |
-| `Spectre.Agent` and `Spectre.Server` | The Agent selects visible flows and capabilities. Server callbacks compose normal commands and handle their outcomes. An application can target work by a logical name. |
-| `Spectre.Activity` | An Activity author writes callbacks using the Server's Context and commands. The facade runs them with the existing Server Runtime. |
+| `Spectre.Stack` | Install the libraries the agent needs. Declare a local Activity here when the application defines one. |
+| `Spectre.Agent` | Choose routing, visible capabilities and policy. |
+| `Spectre.Server` | Write flow handlers that use normal Server commands. Customize results when the application needs to react. |
+| `Spectre.Activity` | Write the logic of an autonomous job using the Server's Context and commands. |
+| `Spectre.Stack.Installable` and `Spectre.Integration` | Declare a library's tools, services, flows or Activity types once. |
 
 The application chooses policy, such as who can publish a document or how many
 missions can run. [The OTP and GAM internals](#4-internal-otp-ownership-and-recovery)
@@ -25,27 +27,28 @@ are for Spectre maintainers and the implementation spike.
 - [Internal OTP ownership and recovery](#4-internal-otp-ownership-and-recovery)
 - [GAM and trust boundaries](#5-gam-and-trust-boundaries)
 - [Adopting the API across packages](#6-adopting-the-api-across-packages)
-- [Delivery order and acceptance tests](#7-delivery-order-and-acceptance-tests)
+- [Implementation sequence and acceptance tests](#7-implementation-sequence-and-acceptance-tests)
 
 ## 1. Library API
 
 Add one optional callback, `integration(compiled_config)`, to
 `Spectre.Stack.Installable`. The result is immutable Elixir data. Names are scoped
 to the installation. Each port has its own input, result and execution contract.
-Start with `service`, `tool`, `flow` and `activity` in the pilots. Exercise
-`resource` and `observe` through `child_specs/2` and `subscribe/1` until Lens and
-Lab can prove the public declarations. Pilot `ingress` with Pulse and Beam
-after local delivery and ownership work.
+The initial public builder covers `service`, `tool`, `flow` and `activity`.
+Use `child_specs/2` for resources, `subscribe/1` for observation and the
+existing authenticated adapters for ingress. Design and promote those
+additional ports once Lens, Lab, Pulse and Beam have demonstrated their
+contracts.
 
 | Port | What the runtime calls, and when | Ownership and result |
 | --- | --- | --- |
 | `service` | A provider keyed by the behaviour at a specific call site, such as inference selection, action planning or storage recovery | Bind the sole eligible provider automatically. When several qualify, the Agent selects one explicitly. A custom service needs a consumer that asks for its behaviour. |
 | `tool` | A named operation called by a flow, Server or Activity | The compiled binding validates arguments and selects the cognitive or governed path. A result returns to the initiating command. |
 | `flow` | Scoped routes at Agent compilation, then `handle_flow/3` and `handle_result/3` | The router selects visible routes. The Server owns input order and command acquisition. Ordinary flows need no process of their own. |
-| `ingress` | An adapter for an external message or event | The adapter authenticates the source. The runtime checks the target owner and delivers a normalized input, signal or decision through the appropriate existing path. |
+| `ingress` (later) | An adapter for an external message or event | The adapter authenticates the source. The runtime checks the target owner and delivers a normalized input, signal or decision through the appropriate existing path. |
 | `activity` | A declared type of autonomous work on an explicit start command | A supervised runtime instance owns its local mission state and has a stable logical reference. Starting, revising and cancelling have separate outcomes. |
-| `observe` | A subscription to selected diagnostic or lifecycle events | The observer receives a redacted projection asynchronously. Its return value cannot change the event or the originating turn. |
-| `resource` | A child specification realized at the declared resource lifetime | The Stack runtime can own a shared browser pool or storage connection. The borrower releases its own tab or handle. The owner stops the shared process. |
+| `observe` (later) | A subscription to selected diagnostic or lifecycle events | The observer receives a redacted projection asynchronously. |
+| `resource` (later) | A child specification realized at the declared resource lifetime | The Stack runtime can own a shared browser pool or storage connection. The borrower releases its own tab or handle. The owner stops the shared process. |
 
 A package only declares the ports it uses. For example, Documents contributes
 two tools and a conversational flow. Prism supplies a service and Directive
@@ -57,10 +60,11 @@ defmodule MyApp.Documents do
 
   def integration(_config) do
     Spectre.Integration.new()
-    |> tool(:read, MyApp.Documents.Read, args: [id: :string], access: :subject_scoped)
-    |> tool(:publish, MyApp.Documents.Publish,
+    |> Spectre.Integration.tool(:read, MyApp.Documents.Read,
+      args: [id: :string], access: :subject_scoped)
+    |> Spectre.Integration.tool(:publish, MyApp.Documents.Publish,
       args: [title: :string, content: :string], governed: :publish_document)
-    |> flow(:documents, MyApp.Documents.Flow)
+    |> Spectre.Integration.flow(:documents, MyApp.Documents.Flow)
   end
 end
 
@@ -68,17 +72,17 @@ end
 def integration(_config),
   do:
     Spectre.Integration.new()
-    |> service(Spectre.Inference.Selector, Prism.Selector)
+    |> Spectre.Integration.service(Spectre.Inference.Selector, Prism.Selector)
 
 # In Directive's Installable:
 def integration(_config),
-  do: Spectre.Integration.new() |> activity(:mission, Spectre.Directive.Activity)
+  do: Spectre.Integration.new() |> Spectre.Integration.activity(:mission, Spectre.Directive.Activity)
 ```
 
-The same builder can declare `resource(:browser_pool, Lens.Pool)` for Lens,
-`ingress(:message, Beam.Ingress)` for Beam and
-`observe(:activity_event, Lab.Observer)` for Lab. The compiler records the
-resource type. It starts only under the owning runtime's configured lifecycle.
+The examples use qualified builder functions. `use Spectre.Stack.Installable`
+supplies the existing manifest contract. Authors can use the builder directly
+without additional imports. Spectre owns resource startup and shutdown via
+the declared resource lifecycle.
 For ingress, bind external message IDs to the authenticated source, target
 agent and session. Deduplicate within the configured retention window. An
 adapter that redelivers after that window needs its own stable idempotency
@@ -115,8 +119,10 @@ runtime boundary that consumes it. A compile-time declaration alone cannot
 deliver a signal or resume a wait. [Installable](../lib/spectre/stack/installable.ex),
 [Extension](../lib/spectre/extension.ex), [Stack tools](../lib/spectre/stack/tools.ex)
 
-**Separate model exposure.** Generate the public description and argument
-schema from declared types only for operations the host exposes. Binding a
+**Separate model exposure.** Generate public descriptions and argument schemas
+from declared types for operations the host exposes. Validate and digest that
+projection against the compiled binding. Keep executable V1 descriptor digests
+unchanged for metadata-only additions. Binding a
 service or installing a tool grants no model visibility or authority by itself.
 A model can describe a goal, suggest arguments or produce Action Language.
 Trusted host code resolves the selected registered action. `prepare` validates
@@ -129,6 +135,10 @@ remain untrusted data throughout generation. [Server tool path](../lib/spectre/s
 ## 2. Routing and conversation ownership
 
 Let the Agent opt into the installed flow scopes it wants the router to see.
+`expose :documents` resolves the only flow scope in the Documents installation.
+When there are several scopes, the Agent selects one with
+`expose flows: [{:documents, :selected_scope}]`. Diagnose a missing or
+ambiguous scope at compile or binding time.
 Preserve the order of input preparation and mandatory checks, global interrupts,
 targeted or foreground waits, ordinary pre-route handlers, router arbitration,
 then selected flow or host fallback. An adapter can supply evidence for visible
@@ -173,7 +183,7 @@ end
 
 Reuse `handle_flow/3` and `handle_result/3` on a flow port with the Server's
 Context return convention. Keep `Spectre.Input` as the normalized input.
-Put validated routing parameters in `ctx.routing.params`, including named
+Put validated routing parameters in `ctx.routing[:params]`, including named
 regex captures. Use declared parameter names for matches and classifiers.
 The values remain untrusted arguments. The document tool still validates the
 ID and enforces its subject scope. An application's catch-all callback only
@@ -208,197 +218,184 @@ calls to Activity callbacks. [Server callbacks](SERVER_CALLBACKS.md),
 
 ## 3. Server commands and an on-demand mission
 
-Keep the normal Server Context, command acquisition, result tags and outbox.
-Add operational commands that use installed bindings.
+Use the existing Server Context, commands, result tags and checkpoint path.
+The initial operational surface adds tool and Activity commands to that path.
 
 | Command | Contract |
 | --- | --- |
-| `call_tool(ctx, {installation, operation}, args, opts)` | Resolve the compiled binding and use the same validation, GAM path and result projection as its generated helper. |
-| `start_activity(ctx, type, args, as: key)` | Stage an authorized start. The runtime acquires one start per command identity and reports readiness and completion as lifecycle events. |
-| `signal_activity(ctx, key, signal, opts)` | Resolve the authorized target at acquisition and keep its identity and expected revision for delivery. The optional result tag receives the applied or rejected result within the turn budget, or `{:pending, signal_id}` followed by a correlated lifecycle notification. |
-| `cancel_activity(ctx, key)` | Cancel that resolved activity, close its waits and settle outstanding effects. Replayed requests retain their original target and outcome. |
-| `complete(ctx, value)` and `fail(ctx, reason)` | End the Activity with a domain result or a logical failure. Spectre commits the terminal outcome and delivers it to the parent. |
+| `generate(ctx, prompt)` | Existing Server command. The current default `handle_result/3` already sends a generated response. |
+| `call_tool(ctx, {installation, operation}, args, opts)` | Use the compiled Stack binding and the same `Spectre.Server.Tool` path as a generated helper. |
+| `start_activity(ctx, type, args, opts)` | Stage an on-demand start. By default Spectre assigns a unique execution ref. Pass `as:` when a logical name is useful. |
+| `signal_activity(ctx, target, signal, opts)` | Resolve an authorized ref or logical key once. Apply the signal to that instance. |
+| `cancel_activity(ctx, target)` | Cancel the resolved instance, close its waits and reconcile outstanding effects. A replay keeps the same target. |
+| `complete(ctx, value)` and `fail(ctx, reason)` | End an Activity through the ordinary command and checkpoint path. |
 
-### Use an installed Activity
+### Run the smallest application
 
-Directive's package declares its mission type. The host wires the route and
-chooses how to present the result.
+A Stack installs Directive and Documents. The Agent recognizes research
+requests. The Server uses one command to start the work.
 
 ```elixir
 defmodule MyApp.Stack do
   use Spectre.Stack
-  install Spectre.Prism
-  install MyApp.Documents
+
   install Spectre.Directive
+  install MyApp.Documents
 end
 
 defmodule MyApp.Agent do
   use Spectre.Agent, stack: MyApp.Stack, server: MyApp.Server
-  expose flows: [{:documents, :documents}]
 
   classifier :llm, MyApp.IntentClassifier
   router strategies: [:regex, :llm_classifier]
 
   flow :work do
-    on :mission, semantic_examples: ["Confronta i documenti D1–D5 e prepara un PDF"]
-    on :revise, semantic_examples: ["Modifica il lavoro in corso per coprire solo l'Italia"]
+    on :research, semantic_examples: [
+      "Analizza i documenti D1–D5",
+      "Confronta i documenti e prepara un PDF"
+    ]
   end
 end
 
 defmodule MyApp.Server do
-  use Spectre.Server, prompt_root: "priv/prompts"
+  use Spectre.Server, prompt_root: "priv/prompts", chat_fallback: :chat
 
-  def handle_flow({:work, :mission}, input, ctx),
-    do: start_activity(ctx, {:directive, :mission}, %{goal: input.text}, as: :mission)
-
-  def handle_flow({:work, :revise}, input, ctx),
-    do: signal_activity(ctx, :mission, {:revise, input.text}, on_result: :revised)
-
-  def handle_flow(:unmatched, input, %{routing: %{reason: :no_match}} = ctx),
-    do: generate(ctx, :chat, input: input, on_result: :reply)
-
-  def handle_flow(:unmatched, _input, %{routing: %{reason: :ambiguous}} = ctx),
-    do: respond(ctx, "Quale attività intendi?")
-
-  def handle_flow(:unmatched, _input, ctx),
-    do: respond(ctx, "Non riesco a interpretare la richiesta. Riprova.")
-
-  def handle_activity(:mission, :started, ctx),
-    do: respond(ctx, "Lavoro avviato.")
-
-  def handle_activity(:mission, {:completed, report}, ctx),
-    do: respond(ctx, report.summary)
-
-  def handle_activity(:mission, {:failed, _reason}, ctx),
-    do: respond(ctx, "La missione non è riuscita.")
-
-  def handle_activity(_key, _event, ctx), do: ctx
-
-  def handle_result(:reply, {:generated, %{text: text}}, ctx), do: respond(ctx, text)
-
-  def handle_result(:revised, {:applied, _id, _revision}, ctx),
-    do: respond(ctx, "Modifica applicata.")
-
-  def handle_result(:revised, {:pending, _id}, ctx),
-    do: respond(ctx, "Modifica in attesa.")
-
-  def handle_result(:revised, {:rejected, _id, _reason}, ctx),
-    do: respond(ctx, "La modifica non è stata applicata. Verifica lo stato del lavoro.")
-
-  def handle_result(tag, result, ctx), do: super(tag, result, ctx)
+  def handle_flow({:work, :research}, input, ctx),
+    do: start_activity(ctx, {:directive, :mission}, %{goal: input.text})
 end
 ```
 
-The Agent's Stack supplies generic runtime bindings. Existing generated helpers
-can still be compiled with explicit `tools:`. A sole inference selector binds
-automatically. An Agent can use `provide Spectre.Inference.Selector, from: :prism`
-when several installed selectors qualify. The host can set Activity limits and
-narrow tool scope per type. A trusted Server callback can explicitly start an
-installed type within the Agent's policy. Model suggestions enter through
-authorized bindings. Starting subactivities requires an explicit host grant.
+`chat_fallback: :chat` is a proposed opt-in to the usual `generate(ctx, :chat)`
+command when the router returns a genuine miss. Ambiguity and provider errors
+retain the existing unmatched handling. Apps can keep their own flow
+handlers. The selected prompt still uses the existing `prompt_root` and
+generation result handler. “Ciao” can be answered without an Activity or a
+second classifier call.
 
-The `as:` key is scoped to the owning agent and session. A single active slot
-can be called `:mission`. For parallel work, use a portable key such as
-`{:mission, request_id}` derived from application data. Treat a repeated
-command ID as a replay. Report a new start against an occupied key as
-`{:failed, {:start, :already_running}}` on that request. A queued signal or
-cancellation stays bound to the instance resolved at acquisition, even when
-the application reuses the key later. Trusted clients can use authorized
-summaries to choose among concurrent missions.
+Document starting the host, supplying classifier and generation providers,
+configuring credentials and writing the `:chat` prompt once. The example
+applications share this setup. To enable direct document lookup, add
+`expose :documents` to the Agent. The installation already makes its tools
+available within the caller's scope. To use Prism, install it as a service.
+If several selectors qualify, choose one with
+`provide Spectre.Inference.Selector, from: :prism`.
 
-`handle_activity/3` is optional. Its events are `:started`,
-`{:progress, summary}`, `{:completed, value}`, `{:failed, reason}` and
-`:cancelled`. The terminal event carries a domain result or logical reason.
-Timeouts and unavailable dependencies report errors through the same public
-path. An accepted signal that returns pending publishes its final correlated
-outcome through the existing subscription. The initiating turn can close
-within its budget while the mission continues. The default Server error
-clause closes an unhandled failing turn with a redacted diagnostic.
+### Optional names, result handlers and lifecycle hooks
 
-For operational control, authorized callers use `Spectre.Server.activities(root)`,
-`activity(root, key)`, `cancel_activity(root, key)` and the existing
-`subscribe(root)`. The external cancellation entry point checks the caller
-and submits the same lifecycle request as a Server callback. Summaries use
-logical names, ownership, state and revisions. Access is scoped to the agent.
+Spectre assigns a different `ref` to each new execution. Two starts with
+no `as:` can run concurrently within the host's limits. Replay keeps its
+original ref. A name such as `as: :monthly_report` gives the app an optional
+key scoped to its agent and session. A competing start for an occupied key
+returns `:already_running` for that request. Once a key is reused, queued
+commands still target the exact ref resolved at acquisition.
+Use an atom such as `:research` for a local type and
+`{installation, type}` for an installed package type.
 
-“Ciao” reaches `generate` on a genuine router miss, after at most one router
-classifier call. “Mostrami il documento D12” uses the installed flow and tool.
-Both leave the Activity count at zero.
+The lifecycle callback and subscriber events carry the execution identity
+as `%{ref: ref, key: key}`. The key is `nil` for an unnamed Activity. Each
+event retains the original ref after key reuse. When a handler needs to
+update a particular active job, it matches its ref. An app can use a key to
+accept events from any execution of a named job.
+
+```elixir
+# Optional named start and result customization in Server callbacks.
+start_activity(ctx, {:directive, :mission}, %{goal: goal}, as: :monthly_report)
+
+def handle_activity(%{ref: ref, key: :monthly_report}, {:completed, report}, ctx) do
+  ctx
+  |> assign(:last_completed_report, %{activity_ref: ref, report: report})
+  |> respond(report.summary)
+end
+```
+
+By default `handle_activity(_identity, _event, ctx)` returns `ctx`. Spectre
+records start, completion, failure and cancellation and exposes them to
+subscribers whether a handler is defined or not. Readiness and terminal
+outcomes remain distinct. A failed start reports the failure of its request
+and leaves an already running instance intact. A custom handler can present
+an outcome or link follow-up work to its ref.
+
+`on_result:` is optional when the default already handles the result.
+Generation follows the current Server result path. A generic tool uses its
+registered operation as the default tag and accepts an explicit tag for
+application work. Existing generated helpers keep their tags. An Activity
+start can be followed through lifecycle events. With an explicit
+`on_result:`, readiness returns `{:ok, %{ref: ref, key: key}}` and a rejected
+start returns `{:error, reason}`.
+A signal with `on_result:` returns the applied or rejected outcome within the
+turn budget, or `{:pending, signal_id}` followed by the final outcome through
+the existing subscription. An unhandled failed command emits a controlled
+error for a normal turn and records a failure for an Activity. A governed
+effect with an unknown outcome retains its reference for reconciliation.
+
+An authorized host uses the external Server API. It can discover a ref with
+`Spectre.Server.activities(root, opts)`, inspect it with
+`Spectre.Server.activity(root, target, opts)` and submit control requests with
+`Spectre.Server.signal_activity(root, target, signal, opts)` and
+`Spectre.Server.cancel_activity(root, target, opts)`. Authorization comes
+from the existing trusted caller boundary. The runtime resolves and records
+the target once for both external calls and commands staged on a Context.
+External calls report acceptance or rejection. Lifecycle results arrive
+asynchronously. A trusted callback may start an installed type within Agent
+policy. Hosts can narrow its tool scope, lifetime and concurrency. Starting
+subactivities requires an explicit grant.
 
 ### Write a custom Activity
 
-Add `activity :research, MyApp.Research` to the Stack above. This local
-declaration compiles to the same `activity` port as a package's
-`integration/1`. Start it as a local type from a Server callback.
+Declare `activity :research, MyApp.Research` once in the Stack. This local
+shortcut compiles to the same Activity binding as a package declaration.
+Start it with `start_activity(ctx, :research, %{id: "D12"})`.
 
 ```elixir
 defmodule MyApp.Research do
-  use Spectre.Activity,
-    prompt_root: "priv/research/prompts",
-    requires: [{:documents, :read}]
+  use Spectre.Activity
 
-  def handle_start(%{id: id}, ctx),
-    do: ctx |> assign(:document_id, id) |> read_document()
+  def handle_start(args, ctx),
+    do: call_tool(ctx, {:documents, :read}, args, on_result: :loaded)
 
-  def handle_result(:document, {:ok, document}, ctx) do
-    generate(ctx, :summarize,
-      assigns: %{document: document, instructions: ctx.assigns[:instructions]},
-      on_result: :summary)
-  end
-
-  def handle_result(:summary, {:generated, %{text: text}}, ctx),
-    do: complete(ctx, %{summary: text})
-
-  def handle_result(_tag, {:error, reason}, ctx), do: fail(ctx, reason)
-
-  def handle_signal({:revise, instructions}, ctx),
-    do: ctx |> assign(:instructions, instructions) |> read_document()
-
-  defp read_document(ctx),
-    do: call_tool(ctx, {:documents, :read}, %{id: ctx.assigns.document_id},
-      on_result: :document)
+  def handle_result(:loaded, {:ok, doc}, ctx),
+    do: complete(ctx, %{document: doc.id})
 end
-
-# In a Server callback:
-start_activity(ctx, :research, %{id: "D12"}, as: :research)
 ```
 
-`Spectre.Activity` reuses the Server Runtime and its existing command result
-shapes. `handle_start(args, ctx)`, `handle_signal(signal, ctx)` and
-`handle_result(tag, result, ctx)` return Context with staged commands.
-Spectre verifies signals before calling `handle_signal/2` and calls
-`handle_start/2` after adoption and activation. The default Activity command
-failure ends the activity. An Activity can handle an expected error as domain
-logic. Validate declared requirements at bind time and check the effective
-scope again at execution.
+`Spectre.Activity` runs those callbacks through `Spectre.Server.Runtime` with
+the existing command, checkpoint and result shapes. Spectre calls
+`handle_start/2` after adoption and activation. An Activity can add
+`handle_signal(signal, ctx)` for verified signals and handle expected errors
+with its own domain logic. Without a custom error clause a failed command
+ends the job. Application callbacks return the normal Context with commands.
 
-The core correlates every command to its generation, Activity revision and
-request ID. A late summary from the old revision cannot call `complete/2`
-for the new one. A previously admitted effect retains its original
-identity and outcome. It reaches the current Activity as a separately tagged
-observation and is visible to the Root. The observer can reconcile the outcome
-before planning another publication. Close or reissue old waits after a
-revision and report a stale wait when an old reply arrives.
+The Agent's compiled Stack supplies generic tool bindings to the Root,
+Skills and Activities. Resolve `{:documents, :read}` from that Stack, apply
+the caller's scope and delegate to `Spectre.Server.Tool` for preparation,
+execution and projection. Explicit `tools:` keeps the compiled helpers
+working. An Activity can declare required operations and a scope ceiling,
+with binding validation and policy checks at execution.
 
-### Walk through a published document
+The core correlates commands with their generation, Activity ref, revision
+and request ID. Earlier results cannot complete a newer revision. A
+previously admitted effect retains its identity and remains observable to the
+current Activity and Root. Close or reissue old waits after a revision.
 
-The user asks “Confronta i documenti D1–D5 e prepara un PDF”. The documents
-describe five companies. The Root starts the installed Directive mission and
-stays available for questions. Directive's driver uses the same Activity
-callbacks to continue its reducer. It requests reasoning through model
-services, user answers through owned waits and document reads through the
-installed binding. It correlates each observed result with its reducer
-request ID. The standalone reducer and its interfaces stay available.
+### Walk through a governed publication
+
+Directive's driver runs the reducer through the same Activity callbacks.
+It requests reasoning through model services, user answers through owned waits
+and document reads through the installed binding. It matches results to
+reducer request IDs. The standalone reducer keeps its existing interfaces.
 [Directive reducer integration](https://github.com/elchemista/spectre_directive/blob/e9f206592a9a8c63b2d59595a33f07dc50803c39/docs/SPECTRE_0_4.md)
 
-“Considera solo aziende italiane” sends a revision to `:mission`. When the
-report is ready, the Activity requests publication through the host's PDF
-binding. The host can configure
-`gam: [operations: %{publish_document: [confirm: true]}]` on the agent.
-The user sees the actual publication proposal and GAM decides its admission.
-A separate plan approval carries no publication authority. A refusal leaves
-the draft available under host policy. An uncertain outcome awaits reconciliation.
-On success the report reaches `handle_activity/3`.
+“Analizza i documenti D1–D5” starts a mission. The Root remains available.
+An authorized host uses
+`Spectre.Server.signal_activity(root, ref, {:revise, "Solo Italia"}, opts)`
+to revise the selected execution. The same revision from a Server callback
+uses `signal_activity(ctx, ref, {:revise, "Solo Italia"})`.
+When the report is ready, the Activity
+requests publication through the Documents binding. With
+`gam: [operations: %{publish_document: [confirm: true]}]`, the user sees the
+actual publication proposal. GAM determines admission. A refusal leaves the
+draft available under host policy. An uncertain outcome awaits reconciliation.
+On success the execution's terminal event carries its report.
 
 ## 4. Internal OTP ownership and recovery
 
@@ -411,7 +408,7 @@ Stack runtime ── shared browser pool / storage connection
 Application supervisor
   ├─ Agent A supervisor (:one_for_one)
   │    ├─ coordination store and managed GAM Domain A
-  │    ├─ Activity branch
+  │    ├─ Activity branch (:rest_for_one)
   │    │    ├─ Registry
   │    │    └─ DynamicSupervisor
   │    │         ├─ Activity m42 (:temporary at this boundary)
@@ -427,6 +424,10 @@ that branch report a logical unavailable state until it recovers. If GAM is
 unavailable, affected operations pause or fail closed under the host's
 existing recovery policy. Restarting an Activity branch leaves Root binding
 and authority intact.
+
+Start the Activity branch on first use. Inside it, start the Registry before
+the DynamicSupervisor. Loss of the Registry restarts the DynamicSupervisor
+and its children within the Activity branch.
 
 In the first pilot a mission crash is terminal. A mission with its own subtree
 remains `:temporary` at the shared supervisor boundary, so exhausting its
@@ -546,7 +547,10 @@ admission through its own scope.
 agent's gates. The pilot needs to demonstrate a boundary scoped to one
 Activity using real Managed GAM. Record a revision or cancellation intent and
 pause that Activity's old work. At the GAM admission boundary, serialize the
-fence with admission using the Activity's identity and expected revision.
+fence with the canonical Domain commit of admission using the Activity's
+identity and expected revision. Exercise that boundary in RAM and durable
+storage. GenServer mailbox order alone cannot order background transitions
+that commit asynchronously.
 After the fence, a late decision returns `:superseded`. If admission wins
 first, retain its effect reference and publish its outcome to the new revision.
 Other missions continue. Run a revision against a pending approval in both
@@ -595,16 +599,106 @@ package, combined scenarios in `spectre_ecosystem`, and small dependency-free
 fixtures in core. The core runtime dispatches by typed port and registered
 binding. It requires no branch keyed to a satellite name.
 
-## 7. Delivery order and acceptance tests
+## 7. Implementation sequence and acceptance tests
 
-| Phase | Deliverable | Evidence before moving on |
+Land one small change at a time and pass its tests before changing the next
+layer. File names below are relative to `lib/spectre/` unless noted. New file
+names are proposed.
+
+| Phase | Main files | Gate |
 | --- | --- | --- |
-| 0. OTP spike | Use fixture Activities, stable coordination, registered startup and local wait matching. | Kill the Root between reservation, spawn, adoption and activation. Recover one mission by command ID. Kill one Activity and its supervisor separately. Plain Root turns still work. |
-| 1. Managed GAM rebind | Move lifetime ownership and authenticate replacement Root attachments with real Managed GAM. | Kill the Root with consent pending. Verify the same Domain and session, one pending consent and valid continuation. Reject delayed control traffic from the old Root. |
-| 2. Revision and admission | Prove per-Activity ordering with the existing GAM path and scoped concurrency. | Force both orderings between approval and revision. Check two competing revisions, stale results, terminal proposer failure and continued work by another mission. |
-| 3. Integration and public APIs | Normalize old and new bindings. Pilot Prism, Documents and one custom Activity. Exercise named starts, signals, cancellation and optional lifecycle callbacks. | Use ordinary app callbacks to start and control work. Restore a 0.4.0 checkpoint. Verify helper equivalence and zero Activity starts for greetings and document reads. |
-| 4. Directive and remaining port pilots | Run Directive's driver, Lens resources, Pulse/Beam ingress, Ledger recovery and Lab observation. | Run the PDF walkthrough and cross-agent failure test in RAM and durable storage. Exercise both borrower and pool failure, and storage outage with pending consent. |
-| 5. Compatibility, performance and docs | Migrate packages incrementally and profile the actual topology. | Run standalone core, satellite conformance and ecosystem integration. Validate the copyable app and package examples before freeze. |
+| 0. Internal OTP | New `server/activities/*`, `server/runtime.ex` | Two fixture Activities run independently. Fault injection around startup produces one execution per command ID. Both existing startup paths return a live Root PID. |
+| 1. Managed GAM rebind | `server/gam/managed.ex`, `server/runtime.ex` | The Root restarts, attaches to the same Domain and session, and continues its pending consent. Old Root control traffic is rejected. |
+| 2. Revision and admission | `server/activities/*`, `server/gam/managed.ex` and its admission path | Force both orders at the real GAM commit boundary. Reject admission after the fence. Preserve an effect admitted before the fence and observe its outcome once. |
+| 3. Activity API | New `activity.ex`, `server.ex`, `server/command.ex`, `server/runtime.ex` | Start, signal, cancel and complete through the existing runtime. Two unnamed starts receive distinct refs. Optional lifecycle hooks and defaults produce the expected results. |
+| 4. Integration API | New `integration.ex`, `stack/installable.ex`, `stack/definition.ex`, `server/tool.ex` | A library registers each binding once. Activities resolve the Agent's compiled Stack. The generic tool call and a generated helper use the same command and GAM path. |
+| 5. Flow and Directive | New `flow/port.ex`, `agent.ex`, `server/router.ex`, `server/runtime.ex`, `spectre_directive` | An exposed flow can call a tool and own its reply. Simple turns leave the Activity count at zero. Directive runs, resumes and revises a mission through the public API. |
+| 6. Compatibility and docs | Core tests, guides, satellite tests and `spectre_ecosystem` | The three developer fixtures below compile and execute. Old helpers and checkpoints still work. Prism, Documents and Directive pass end-to-end tests. |
+
+### First change · OTP only
+
+The first commit contains the internal startup protocol and a small test
+fixture. The fixture receives a message, updates its state and completes.
+Create its Activity branch on first use. Exercise the current Root through
+direct start and supervised summon with 0.4.0's Root lifetime and Managed
+GAM ownership. Fixture Activities use fixture coordination for fault
+injection. The Activity macro, Integration builder and real Managed GAM
+rebind belong to later increments.
+
+```text
+reserve(command_id, activity_type) → {:ok, ref}
+spawn_waiting(ref)                   → {:ok, pid}
+adopt(ref, pid)                      → :ok
+activate(ref)                        → :ok
+```
+
+The first fixture asserts that scoped failures and replay preserve the
+original work.
+
+```elixir
+# Core test pseudocode. These helpers belong to the test fixture.
+{:ok, root} = start_agent_fixture()
+command_id = "fixture-1"
+{:ok, first} = start_activity_fixture(root, command_id)
+{:ok, second} = start_activity_fixture(root, "fixture-2")
+
+crash_fixture(first)
+
+assert fixture_status(first) == :failed
+assert fixture_status(second) == :running
+assert root_responds?(root)
+assert replay_start(root, command_id) == {:ok, first}
+```
+
+Crash the Root before and after each startup step. A waiting child stays
+inert until adopted and activated. Assert one ref, one live instance and
+one start outcome for each admitted command. Crash the Activity supervisor
+separately and confirm the Root still answers simple turns. Assert monitoring
+and terminal state for the affected children.
+
+Exercise `Spectre.Server.start_link/1` and `Spectre.Supervisor.summon` with
+a bound Agent. Each must still return the live Root PID accepted by
+`Spectre.Server.input/2`. Preserve direct start linking and supervised
+ownership, including existing subject-based summon behaviour. Verify
+restart through the applicable startup path. A replaced Root gets a fresh
+PID. [Server startup](../lib/spectre/server.ex),
+[supervised summon](../lib/spectre/otp/supervisor.ex)
+
+### Gates before phase 3
+
+1. **Isolation and replay.** A failed mission leaves the Root and its
+   siblings available. A retried start adopts the same execution.
+2. **Recovery and GAM.** Kill the Root with consent pending. Recover the
+   same Domain, session, outstanding request and effect identities. The
+   replacement Root can continue the consent and stale control traffic
+   is rejected. Also hold an authenticated approval in flight at the
+   canonical commit boundary, restart and reattach the Root, then release
+   the approval. Assert one consumption of the original consent, one effect
+   ref, one observed logical outcome at the replacement Root and the recorded
+   result on replay. Reject a new decision from the old attachment without
+   consuming the consent. Exercise a surviving Activity from the stable
+   owner's binding. Run these cases in RAM and with durable storage.
+3. **Revision and admission.** At the canonical GAM commit boundary, force
+   the fence to win and assert that execution never starts. Force admission
+   to win and assert one effect with an outcome the new revision can observe.
+   Include a crash between the fence and the Activity commit.
+
+### Developer experience gate
+
+Use three fixture applications with shared setup for the host, model and
+prompt configuration. Each example is copyable and compiles with ordinary
+application code. Run end to end with deterministic providers.
+
+| Application | Minimum demonstration |
+| --- | --- |
+| Hello Agent | Share a configured provider and a `:chat` prompt. Send a plain input through the existing generation and default reply path. Check zero Activity starts and controlled provider errors. |
+| Agent with tool | Install Documents, select its flow with `expose :documents`, resolve a tool by its Stack binding and observe its result. Exercise a tool error without a custom error handler. |
+| Agent with autonomous work | Use the three-module Directive example. Start two unnamed missions and revise one by its discovered ref through the host API. Read completion from lifecycle events and verify default failure reporting. Then reuse a named key and check that a delayed event still identifies its original instance. |
+
+Use the existing `child_specs/2`, diagnostics subscriptions and ingress
+adapters in the first compatibility pass. Show Lens, Lab and Pulse/Beam
+working on those paths before deciding whether to promote `resource`,
+`observe` and `ingress` to public builder functions.
 
 **Decisive failure test.** Two agents share a Stack. Agent A starts two
 missions, then crashes one after an external write. The other mission
@@ -616,7 +710,7 @@ and storage outage while consent is pending.
 
 | Focused scenario | Pass condition |
 | --- | --- |
-| Copy the installed and custom Activity examples into a fixture application | The app installs, starts, signals and cancels by logical key. It observes logical success or failure using the same Server Context and commands. Test the callbacks with the command fixture, then repeat through real OTP. |
+| Copy the custom Activity into the fixture Stack | The local declaration binds once. Its two callbacks can complete or fail using compiled Agent Stack tools. |
 | Start request replay or key reused by a new Activity | A replay resolves the first instance. A delayed request targeting it cannot affect the replacement. |
 | Wait owner suspended by the test | The unrelated Root turn completes within its budget. An explicitly targeted reply remains correlated. |
 | Old plan completes after a revision | Its result does not advance the new plan. A superseded admitted effect is visible as an observation. |

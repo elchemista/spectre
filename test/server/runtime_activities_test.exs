@@ -18,17 +18,25 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
     def project(_operation, result), do: {:ok, result}
 
     @impl true
-    def execute_effect(:publish, %{id: "held"}, _context) do
+    def execute_effect(:publish, %{id: "held"}, _context), do: held_publication("held")
+
+    def execute_effect(:publish, %{id: "held_external"}, _context) do
+      Spectre.Server.TaskSupervisor
+      |> Task.Supervisor.async_nolink(fn -> held_publication("held_external") end)
+      |> Task.await()
+    end
+
+    def execute_effect(:publish, %{id: id}, _context), do: {:ok, %{published: id}}
+
+    defp held_publication(id) do
       send(Spectre.Server.RuntimeActivitiesTest, {:publication_started, self()})
 
       receive do
-        :release_publication -> {:ok, %{published: "held"}}
+        :release_publication -> {:ok, %{published: id}}
       after
         5_000 -> {:error, :ambiguous, :publication_wait_expired}
       end
     end
-
-    def execute_effect(:publish, %{id: id}, _context), do: {:ok, %{published: id}}
   end
 
   defmodule Documents do
@@ -91,6 +99,16 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
 
     def handle_signal({:cancel_child, target}, ctx),
       do: cancel_activity(ctx, target, on_result: :child_control)
+
+    def handle_signal({:hold_completion, result}, ctx) do
+      send(Spectre.Server.RuntimeActivitiesTest, {:completion_ready, self()})
+
+      receive do
+        :complete_activity -> complete(ctx, result)
+      after
+        5_000 -> fail(ctx, :completion_wait_expired)
+      end
+    end
 
     def handle_signal(signal, ctx), do: super(signal, ctx)
   end
@@ -291,6 +309,124 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
     refute_receive {Server, ^replacement, {:activity, %{ref: ^ref}, :started}}
   end
 
+  for timing <- [:before_completion, :before_acknowledgement] do
+    @timing timing
+    test "a completion is replayed once when the Root crashes #{@timing}" do
+      Process.register(self(), __MODULE__)
+      supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+      options = [subject: Spectre.Identity.uuid7(), consumer: self(), init_arg: self()]
+      assert {:ok, original} = Spectre.Supervisor.summon(supervisor, Agent, options)
+      assert_receive {:root_ready, ^original}, @timeout
+      ref = start_activity(original, :waiting, as: :report)
+      coordinator = activity_coordinator(original)
+      child = hold_completion(original, ref, "completed offline")
+
+      assert :ok = :sys.suspend(supervisor)
+
+      try do
+        if @timing == :before_acknowledgement, do: :ok = :sys.suspend(original)
+        crash_root(original, @timing, :before_completion)
+        send(child, :complete_activity)
+
+        assert eventually(fn ->
+                 match?({:ok, %{status: :completed}}, Activities.view(coordinator, ref))
+               end)
+
+        crash_root(original, @timing, :before_acknowledgement)
+      after
+        :sys.resume(supervisor)
+      end
+
+      assert_receive {:root_ready, replacement}, @timeout
+      refute original == replacement
+
+      assert_receive {Server, ^replacement,
+                      {:activity, %{ref: ^ref, status: :completed},
+                       {:completed, "completed offline"}}},
+                     @timeout
+
+      assert_receive {:handled_activity, ^ref, :report, {:completed, "completed offline"}},
+                     @timeout
+
+      refute_receive {:handled_activity, ^ref, :report, {:completed, _}}
+      refute_received {Server, _, {:activity, %{ref: ^ref}, {:completed, _}}}
+    end
+  end
+
+  test "a completion while a revision fence is pending retains the terminal report" do
+    Process.register(self(), __MODULE__)
+    root = start_root()
+    ref = start_activity(root)
+    coordinator = activity_coordinator(root)
+    child = hold_completion(root, ref, "report before the fence")
+    child_monitor = Process.monitor(child)
+    %{managed_owner: managed} = :sys.get_state(root)
+    %{domain: domain} = :sys.get_state(managed)
+
+    assert :ok = :sys.suspend(domain)
+
+    request =
+      try do
+        assert {:ok, request} = Server.signal_activity(root, ref, {:revise, "new instructions"})
+
+        assert eventually(fn ->
+                 :sys.get_state(coordinator).entries[ref].transition == request
+               end)
+
+        send(child, :complete_activity)
+        assert_receive {:DOWN, ^child_monitor, :process, ^child, :normal}, @timeout
+
+        assert eventually(fn ->
+                 match?({:ok, %{pid: nil}}, Activities.lookup(coordinator, ref))
+               end)
+
+        request
+      after
+        :sys.resume(domain)
+      end
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref, status: :completed},
+                     {:completed, "report before the fence"}}},
+                   @timeout
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref},
+                     {:signalled, ^request, {:error, :inactive_activity}}}},
+                   @timeout
+
+    refute_received {Server, ^root, {:activity, %{ref: ^ref}, {:failed, :normal}}}
+  end
+
+  test "a completion from before a committed revision is reported as superseded" do
+    Process.register(self(), __MODULE__)
+    root = start_root()
+    ref = start_activity(root)
+    assert {:ok, %{revision: previous}} = Server.activity(root, ref)
+    revision = previous + 1
+    child = hold_completion(root, ref, "obsolete report")
+
+    assert {:ok, request} = Server.signal_activity(root, ref, {:revise, "revised report"})
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref, revision: ^revision},
+                     {:signalled, ^request, {:ok, _}}}},
+                   @timeout
+
+    send(child, :complete_activity)
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref, revision: ^revision, status: :running},
+                     {:superseded, ^previous, {:completed, "obsolete report"}}}},
+                   @timeout
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref, status: :completed}, {:completed, "revised report"}}},
+                   @timeout
+
+    refute_received {Server, ^root, {:activity, %{ref: ^ref}, {:completed, "obsolete report"}}}
+  end
+
   test "an Activity uses its Agent's compiled tool and handles failures by default" do
     root = start_root()
     assert :queued = GenServer.call(root, {:work, {:read, "D12"}, []})
@@ -415,6 +551,128 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
     assert [%{status: :succeeded}] = publication_outcomes(root)
   end
 
+  for termination <- [:cancel, :crash, :unaccepted_result] do
+    @termination termination
+    test "the Root receives an admitted outcome after Activity #{@termination}" do
+      Process.register(self(), __MODULE__)
+      root = start_publication_root()
+      ref = start_activity(root, {:publish, "held"})
+      presentation = presentation_ref()
+      present(root, ref, presentation)
+      assert {:ok, _} = Server.decide(root, nil, presentation, :confirm)
+      assert_receive {:publication_started, executor}, @timeout
+      on_exit(fn -> send(executor, :release_publication) end)
+
+      child = activity_pid(root, ref)
+      child_monitor = Process.monitor(child)
+      terminal = terminate_activity(@termination, root, ref, child, executor)
+      assert_receive {Server, ^root, {:activity, %{ref: ^ref}, ^terminal}}, @timeout
+
+      send(executor, :release_publication)
+
+      assert_receive {Server, ^root,
+                      {:activity, %{ref: ^ref},
+                       {:effect, {:governed, %{outcome: %{ref: outcome_ref, status: :succeeded}}}}}},
+                     @timeout
+
+      assert_receive {:DOWN, ^child_monitor, :process, ^child, _}, @timeout
+      assert [%{ref: ^outcome_ref, status: :succeeded}] = publication_outcomes(root)
+      refute_receive {Server, ^root, {:activity, %{ref: ^ref}, {:effect, {:governed, _}}}}
+      refute_received {:publication_started, _}
+    end
+  end
+
+  test "a lost bridge outcome preserves the cancelled Activity checkpoint" do
+    Process.register(self(), __MODULE__)
+    root = start_publication_root()
+    ref = start_activity(root, {:publish, "held_external"})
+    presentation = presentation_ref()
+    present(root, ref, presentation)
+    assert {:ok, _} = Server.decide(root, nil, presentation, :confirm)
+    assert_receive {:publication_started, executor}, @timeout
+    on_exit(fn -> send(executor, :release_publication) end)
+
+    child = activity_pid(root, ref)
+    %{opts: opts, workers: workers} = :sys.get_state(child)
+
+    assert [%{pid: bridge, command_id: command_id}] =
+             for({_, %{kind: :confirm_pending} = worker} <- workers, do: worker)
+
+    {store, owner, key} = Keyword.fetch!(opts, :checkpoint)
+    assert {:ok, _} = store.fetch(owner, key)
+    refute executor == bridge
+    Process.exit(bridge, :kill)
+
+    assert_receive {Server, ^root,
+                    {:activity, %{ref: ^ref},
+                     {:effect, {:governed_unknown, %{command_id: ^command_id}}}}},
+                   @timeout
+
+    assert Process.alive?(executor)
+    send(executor, :release_publication)
+    child_monitor = Process.monitor(child)
+    assert {:ok, _} = Server.cancel_activity(root, ref)
+    assert_receive {Server, ^root, {:activity, %{ref: ^ref}, :cancelled}}, @timeout
+    assert_receive {:DOWN, ^child_monitor, :process, ^child, :normal}, @timeout
+
+    # Retirement runs asynchronously after the Coordinator sees the child exit.
+    refute eventually(
+             fn -> store.fetch(owner, key) == :not_found end,
+             System.monotonic_time(:millisecond) + 150
+           )
+
+    assert {:ok, _} = store.fetch(owner, key)
+  end
+
+  for mode <- [:retry, :memory] do
+    @mode mode
+    @tag :tmp_dir
+    test "#{mode} storage recovery reports running Activities that it closes", %{tmp_dir: path} do
+      root =
+        start_root(
+          identity: %{subject: Spectre.Identity.uuid7()},
+          gam: [storage: {:disk, path}]
+        )
+
+      first = start_activity(root, :waiting, as: :monthly_report)
+      second = start_activity(root)
+      children = for ref <- [first, second], do: activity_pid(root, ref)
+      monitors = for child <- children, do: Process.monitor(child)
+
+      assert :ok = Server.recover_storage(root, @mode)
+      assert_receive {Server, ^root, {:storage_recovered, _}}, @timeout
+
+      for ref <- [first, second] do
+        assert_receive {Server, ^root,
+                        {:activity, %{ref: ^ref, status: :failed},
+                         {:failed, :gam_storage_recovered}}},
+                       @timeout
+
+        assert {:ok, %{status: :failed}} = Server.activity(root, ref)
+      end
+
+      for monitor <- monitors do
+        assert_receive {:DOWN, ^monitor, :process, _, _}, @timeout
+      end
+
+      replacement = start_activity(root, :waiting, as: :monthly_report)
+      refute replacement == first
+      assert {:ok, %{status: :running}} = Server.activity(root, replacement)
+
+      assert {:ok, request} =
+               Server.signal_activity(root, replacement, {:revise, "recovered report"})
+
+      assert_receive {Server, ^root,
+                      {:activity, %{ref: ^replacement}, {:signalled, ^request, {:ok, _}}}},
+                     @timeout
+
+      assert_receive {Server, ^root,
+                      {:activity, %{ref: ^replacement, status: :completed},
+                       {:completed, "recovered report"}}},
+                     @timeout
+    end
+  end
+
   test "the Root serves ordinary turns during consent relay and reports child loss" do
     root = start_publication_root()
     ref = start_activity(root, {:publish, "D12"})
@@ -501,9 +759,69 @@ defmodule Spectre.Server.RuntimeActivitiesTest do
   end
 
   defp activity_pid(root, ref) do
-    %{activity_connection: {coordinator, _control}} = :sys.get_state(root)
+    coordinator = activity_coordinator(root)
     assert {:ok, %{status: :running, pid: pid}} = Activities.lookup(coordinator, ref)
     pid
+  end
+
+  defp activity_coordinator(root) do
+    %{activity_connection: {coordinator, _control}} = :sys.get_state(root)
+    coordinator
+  end
+
+  defp hold_completion(root, ref, report) do
+    assert {:ok, _} = Server.signal_activity(root, ref, {:hold_completion, report})
+    assert_receive {:completion_ready, child}, @timeout
+    child
+  end
+
+  defp crash_root(root, timing, timing) do
+    monitor = Process.monitor(root)
+    Process.exit(root, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^root, :killed}, @timeout
+  end
+
+  defp crash_root(_root, _timing, _phase), do: :ok
+
+  defp terminate_activity(:cancel, root, ref, _child, _executor) do
+    assert {:ok, _} = Server.cancel_activity(root, ref)
+    :cancelled
+  end
+
+  defp terminate_activity(:crash, _root, _ref, child, _executor) do
+    Process.exit(child, :kill)
+    {:failed, :killed}
+  end
+
+  defp terminate_activity(:unaccepted_result, _root, _ref, child, executor) do
+    assert :ok = :sys.suspend(child)
+
+    try do
+      send(executor, :release_publication)
+
+      assert eventually(fn ->
+               {:messages, messages} = Process.info(child, :messages)
+               Enum.any?(messages, &match?({Runtime, _, :result, {:governed, _}}, &1))
+             end)
+    after
+      Process.exit(child, :kill)
+    end
+
+    {:failed, :killed}
+  end
+
+  defp eventually(fun, deadline \\ System.monotonic_time(:millisecond) + @timeout) do
+    cond do
+      fun.() ->
+        true
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        false
+
+      true ->
+        Process.sleep(10)
+        eventually(fun, deadline)
+    end
   end
 
   defp reset_when_idle(root, deadline) do
