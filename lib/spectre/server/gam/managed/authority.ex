@@ -1,8 +1,8 @@
 defmodule Spectre.Server.GAM.Managed.Authority do
   @moduledoc false
-  @behaviour Spectre.GAM.Genesis.Verifier
+  @behaviour ExGAM.Genesis.Verifier
 
-  alias Spectre.GAM.Genesis
+  alias ExGAM.Genesis
 
   # The application configuration is the external authority boundary. The
   # expected digest is computed from that trusted configuration before Domain

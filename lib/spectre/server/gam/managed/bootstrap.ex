@@ -1,14 +1,14 @@
 defmodule Spectre.Server.GAM.Managed.Bootstrap do
   @moduledoc false
-  alias Spectre.GAM
-  alias Spectre.GAM.Canonical.Value
-  alias Spectre.GAM.Consequence.Contract
-  alias Spectre.GAM.Domain.Sequencer
-  alias Spectre.GAM.Governance.Builder, as: GovernanceBuilder
-  alias Spectre.GAM.GovernedAct.{Class, State}
-  alias Spectre.GAM.Ledger.Store.Disk, as: LedgerDisk
-  alias Spectre.GAM.Ledger.Store.ETS, as: LedgerETS
-  alias Spectre.GAM.Scope.Opening
+  alias ExGAM, as: GAM
+  alias ExGAM.Canonical.Value
+  alias ExGAM.Consequence.Contract
+  alias ExGAM.Domain.Sequencer
+  alias ExGAM.Governance.Builder, as: GovernanceBuilder
+  alias ExGAM.GovernedAct.{Class, State}
+  alias ExGAM.Ledger.Store.Disk, as: LedgerDisk
+  alias ExGAM.Ledger.Store.ETS, as: LedgerETS
+  alias ExGAM.Scope.Opening
   alias Spectre.Server.GAM.{Effect, Managed}
 
   alias Spectre.Server.GAM.Managed.{
@@ -37,7 +37,7 @@ defmodule Spectre.Server.GAM.Managed.Bootstrap do
   @spec open(keyword(), pid()) :: {:ok, map()} | {:error, term()}
   def open(opts, owner) do
     with {:ok, opts, session} <- Session.restore(opts),
-         {:ok, policy} <- Spectre.GAM.Domain.Recovery.Policy.normalize(opts[:recovery_policy]),
+         {:ok, policy} <- ExGAM.Domain.Recovery.Policy.normalize(opts[:recovery_policy]),
          opts = Keyword.put(opts, :recovery_policy, policy),
          {:ok, opts} <- Reviewer.normalize(opts),
          {:ok, opts} <- Approval.normalize(opts),

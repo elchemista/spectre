@@ -1,6 +1,6 @@
 defmodule Spectre.Server.GAM.Managed.Content do
   @moduledoc false
-  alias Spectre.GAM
+  alias ExGAM, as: GAM
   alias Spectre.Server.GAM.Managed.Payload
 
   @fields ~w(payload execution_identity execution_context managed_policy bound)

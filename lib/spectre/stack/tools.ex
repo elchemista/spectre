@@ -26,7 +26,7 @@ defmodule Spectre.Stack.Tools do
   packages to compile their integration modules independently of the Stack.
   """
 
-  alias Spectre.GAM.Canonical.Value, as: CanonicalValue
+  alias ExGAM.Canonical.Value, as: CanonicalValue
   alias Spectre.Integration
   alias Spectre.Stack.Installation
   alias Spectre.Stack.Value

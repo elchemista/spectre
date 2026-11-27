@@ -1,7 +1,6 @@
 defmodule Spectre.Server.ManagedRevocationTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM
   alias Spectre.Server
 
   defmodule Effect do
@@ -72,17 +71,17 @@ defmodule Spectre.Server.ManagedRevocationTest do
     server = start_supervised!({Server, options()})
 
     assert {:error, :untrusted_governance_transport} =
-             Task.async(fn -> GAM.revoke(server) end) |> Task.await()
+             Task.async(fn -> Spectre.GAM.revoke(server) end) |> Task.await()
 
     assert {:ok, _} = Server.input(server, "before")
     assert_receive {:effect, %{body: "before"}}, 5_000
     assert_receive {:completed, {:governed, %{outcome: %{status: :succeeded}}}}, 5_000
 
-    assert {:ok, result} = GAM.revoke(server)
+    assert {:ok, result} = Spectre.GAM.revoke(server)
     assert result.primary.decision.outcome == :admitted
     assert result.primary.act.class == "mandate.revoke"
     assert is_nil(result.primary.attempt)
-    assert {:ok, repeat} = GAM.revoke(server)
+    assert {:ok, repeat} = Spectre.GAM.revoke(server)
     assert repeat.primary.act == result.primary.act
 
     assert {:ok, _} = Server.input(server, "after")
@@ -102,7 +101,7 @@ defmodule Spectre.Server.ManagedRevocationTest do
     assert {:ok, _} = Server.input(server, "before restart")
     assert_receive {:effect, _}, 5_000
     assert_receive {:completed, {:governed, %{outcome: %{status: :succeeded}}}}, 5_000
-    assert {:ok, revoked} = GAM.revoke(server)
+    assert {:ok, revoked} = Spectre.GAM.revoke(server)
     GenServer.stop(server)
 
     {:ok, restarted} = Server.start_link(opts)

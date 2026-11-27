@@ -7,9 +7,9 @@ defmodule Spectre.Server.GAM.Invocation do
   or a grant. The bridge requires this Evidence in the Candidate. Legacy host
   integrations retain their existing Skill envelope and root observation path.
   """
-  alias Spectre.GAM
-  alias Spectre.GAM.{Evidence, Ingress, Scope, SubmissionContext}
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM, as: GAM
+  alias ExGAM.{Evidence, Ingress, Scope, SubmissionContext}
+  alias ExGAM.Canonical.Value
   alias Spectre.Server.GAM.Managed.Payload
 
   @doc "Builds attribution Evidence inside the authenticated Domain ingress."

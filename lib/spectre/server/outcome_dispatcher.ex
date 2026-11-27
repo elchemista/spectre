@@ -28,8 +28,8 @@ defmodule Spectre.Server.OutcomeDispatcher do
   """
   use GenServer
 
-  alias Spectre.GAM.Adapter
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Adapter
+  alias ExGAM.Canonical.Value
   alias Spectre.Server.Store.Disk
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()

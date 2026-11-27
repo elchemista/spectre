@@ -1,4 +1,4 @@
-# Spectre 0.4.1 documentation
+# Spectre 0.4.2 documentation
 
 The application model is **Stack → Agent → Server**. GAM governs the operations
 the host declares consequential. Existing 0.3 applications start with

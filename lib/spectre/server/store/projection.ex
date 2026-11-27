@@ -1,8 +1,8 @@
 defmodule Spectre.Server.Store.Projection do
   @moduledoc false
-  @behaviour Spectre.GAM.Domain.Projection.Store
-  alias Spectre.GAM.Domain.Projection.Store
-  alias Spectre.GAM.Ledger
+  @behaviour ExGAM.Domain.Projection.Store
+  alias ExGAM.Domain.Projection.Store
+  alias ExGAM.Ledger
 
   # Shares the coordination provider reference without moving authority or
   # lifecycle ownership out of the existing Domain and host boundaries.

@@ -1,6 +1,6 @@
 defmodule Spectre.Server.Store.Binding do
   @moduledoc false
-  alias Spectre.GAM.Adapter
+  alias ExGAM.Adapter
   alias Spectre.Server.{Checkpoint, Store}
 
   def configured(opts), do: resolve(opts, nil)

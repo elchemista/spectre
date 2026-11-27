@@ -5,7 +5,7 @@ defmodule Spectre do
   Applications use `Spectre.Stack` for installed capabilities,
   `Spectre.Agent` for recognition, and `Spectre.Server` for behaviour.
   `Spectre.Server.Runtime` owns the conversation in one GenServer. Governed
-  consequences enter the host bridge `Spectre.Server.GAM` and the `Spectre.GAM`
+  consequences enter the host bridge `Spectre.Server.GAM` and the `ExGAM`
   kernel; a model proposal is neither authority nor proof of execution.
 
   The root Server can start supervised `Spectre.Activity` executions with
@@ -37,7 +37,7 @@ defmodule Spectre do
   alias Spectre.Runtime
   alias Spectre.State
 
-  @version "0.4.1"
+  @version "0.4.2"
 
   @doc """
   Returns the running Spectre library version.

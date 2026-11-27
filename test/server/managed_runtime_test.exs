@@ -209,7 +209,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
   end
 
   @doc false
-  @spec custom_interpret(Spectre.Input.t(), Spectre.GAM.Presentation.t()) ::
+  @spec custom_interpret(Spectre.Input.t(), ExGAM.Presentation.t()) ::
           :confirm | :reject | :unclear
   def custom_interpret(%Spectre.Input{text: "procedi pure"}, _presentation), do: :confirm
 
@@ -1207,7 +1207,7 @@ defmodule Spectre.Server.ManagedRuntimeTest do
     managed = :sys.get_state(server).managed_owner
     domain = :sys.get_state(managed).domain
     domain_ref = :sys.get_state(managed).refs.domain
-    registry = Spectre.GAM.Domain.Notifications
+    registry = ExGAM.Domain.Notifications
 
     assert :ok = Server.subscribe(server)
     assert :ok = Server.subscribe(server)
@@ -1305,8 +1305,8 @@ defmodule Spectre.Server.ManagedRuntimeTest do
   test "a subscription accepted while notifications are unavailable retains checkpoint delivery",
        %{tmp_dir: path} do
     server = diagnostics_server(path)
-    notifier = Spectre.GAM.Domain.Notifications
-    supervisor = Spectre.GAM.ApplicationSupervisor
+    notifier = ExGAM.Domain.Notifications
+    supervisor = ExGAM.ApplicationSupervisor
     managed = :sys.get_state(server).managed_owner
     domain_ref = :sys.get_state(managed).refs.domain
     assert :ok = Supervisor.terminate_child(supervisor, notifier)

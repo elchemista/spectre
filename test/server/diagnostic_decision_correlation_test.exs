@@ -1,8 +1,8 @@
 defmodule Spectre.Server.DiagnosticDecisionCorrelationTest do
   use ExUnit.Case, async: true
-  alias Spectre.GAM.{Decision, Evidence}
-  alias Spectre.GAM.GovernedAct.{Catalog, State}
-  alias Spectre.GAM.Scope.{Diagnostics, Opening}
+  alias ExGAM.{Decision, Evidence}
+  alias ExGAM.GovernedAct.{Catalog, State}
+  alias ExGAM.Scope.{Diagnostics, Opening}
 
   test "interaction correlation matches exact action and presentation identities" do
     scope = "scope"

@@ -22,8 +22,8 @@ defmodule Spectre.Payload.Store do
   commit fails, cleanup of unused content belongs to the application.
   """
 
-  alias Spectre.GAM.Adapter
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Adapter
+  alias ExGAM.Canonical.Value
 
   @type config :: {module(), keyword()}
   @type payload_ref :: term()

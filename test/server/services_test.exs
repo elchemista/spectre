@@ -1,6 +1,6 @@
 defmodule Spectre.Server.ServicesTest do
   use ExUnit.Case, async: true
-  alias Spectre.GAM.Presentation
+  alias ExGAM.Presentation
   alias Spectre.Server.Services
 
   defmodule Model do

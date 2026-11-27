@@ -1,6 +1,6 @@
 defmodule Spectre.Server.GAM.Managed.LedgerStorage do
   @moduledoc false
-  alias Spectre.GAM.{Adapter, Ledger}
+  alias ExGAM.{Adapter, Ledger}
   alias Spectre.Server.Store.Port
 
   @ledger_callbacks [
@@ -24,7 +24,7 @@ defmodule Spectre.Server.GAM.Managed.LedgerStorage do
   # immutable configuration, not a projection or a replacement for the ledger.
   def open(selection, journal, domain, digest) when not is_nil(journal) do
     with {:ok, %{ledger: selected, projection: projection}} <- select(selection, journal),
-         {:ok, projection} <- Spectre.GAM.Domain.Projection.Store.normalize(projection),
+         {:ok, projection} <- ExGAM.Domain.Projection.Store.normalize(projection),
          {:ok, {module, opts} = store} <- Ledger.Store.normalize(selected),
          :ok <- Adapter.validate(module, append: 5, load: 2, head: 2),
          key = {:managed_authority, domain},

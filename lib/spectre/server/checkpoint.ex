@@ -40,7 +40,7 @@ defmodule Spectre.Server.Checkpoint do
   writing the snapshot inline. Retention and protection of external snapshots
   belong to the configured application adapter.
   """
-  alias Spectre.GAM.Canonical.Value
+  alias Spectre.Canonical.Value
   alias Spectre.Payload.Store, as: PayloadStore
   alias Spectre.Server.GAM.Managed
   alias Spectre.Server.Store.Disk
@@ -57,21 +57,28 @@ defmodule Spectre.Server.Checkpoint do
     Spectre.Rule,
     Spectre.Flow.Constraint,
     Spectre.Server.Command,
-    Spectre.GAM.Candidate,
-    Spectre.GAM.Row,
-    Spectre.GAM.Presentation,
-    Spectre.GAM.Act,
-    Spectre.GAM.Attempt,
-    Spectre.GAM.Outcome,
-    Spectre.GAM.Decision,
-    Spectre.GAM.Evidence,
-    Spectre.GAM.Label,
-    Spectre.GAM.Condition,
-    Spectre.GAM.Disclosure,
-    Spectre.GAM.Duty,
-    Spectre.GAM.Proposal.Result,
-    Spectre.GAM.Attempt.Runner.Result
+    ExGAM.Candidate,
+    ExGAM.Row,
+    ExGAM.Presentation,
+    ExGAM.Act,
+    ExGAM.Attempt,
+    ExGAM.Outcome,
+    ExGAM.Decision,
+    ExGAM.Evidence,
+    ExGAM.Label,
+    ExGAM.Condition,
+    ExGAM.Disclosure,
+    ExGAM.Duty,
+    ExGAM.Proposal.Result,
+    ExGAM.Attempt.Runner.Result
   ]
+
+  # Keep the wire tags used by checkpoints and detached payloads before ExGAM.
+  @gam_struct_tags for module <- @records,
+                       "Elixir.ExGAM." <> name <- [Atom.to_string(module)],
+                       into: %{},
+                       do: {module, "Elixir.Spectre.GAM." <> name}
+  @codec_options [allowed_structs: @records, struct_tags: @gam_struct_tags]
 
   def load(%{opts: opts} = state) do
     state = cache_fingerprint(state)
@@ -105,7 +112,7 @@ defmodule Spectre.Server.Checkpoint do
 
   defp load_entry({:ok, %{revision: revision, value: binary}}, state) do
     with {:ok, binary} <- restore_payload(binary, state.opts, revision),
-         {:ok, saved} <- Value.decode(binary, allowed_structs: @records),
+         {:ok, saved} <- decode_snapshot(binary),
          {:ok, projection} <- migrate_if_needed(saved, state),
          :ok <- validate(projection, state),
          :ok <- Spectre.Server.Contracts.validate_assigns(state.server, projection.assigns),
@@ -219,7 +226,7 @@ defmodule Spectre.Server.Checkpoint do
         {module, store, key} = storage(configuration)
         projection = projection(state)
 
-        with {:ok, bytes} <- Value.encode(projection, allowed_structs: @records),
+        with {:ok, bytes} <- encode_value(projection),
              {:ok, bytes} <- protect_payload(bytes, opts, key, state.checkpoint_revision),
              {:ok, revision} <- commit(module, store, key, state.checkpoint_revision, bytes) do
           Spectre.Server.Diagnostics.changed(state, revision)
@@ -241,7 +248,7 @@ defmodule Spectre.Server.Checkpoint do
   end
 
   @doc "Encodes a portable Server coordination value with the checkpoint record allowlist."
-  def encode_value(value), do: Value.encode(value, allowed_structs: @records)
+  def encode_value(value), do: Value.encode_budgeted(value, @codec_options)
 
   @doc """
   Decodes a portable value without loading or executing an Agent.
@@ -249,7 +256,7 @@ defmodule Spectre.Server.Checkpoint do
   This checks the codec and record allowlist only. Snapshot identity, definition
   compatibility and checkpoint structure are validated separately during load.
   """
-  def decode_snapshot(binary), do: Value.decode(binary, allowed_structs: @records)
+  def decode_snapshot(binary), do: Value.decode_checked(binary, @codec_options)
 
   @doc "Decodes a snapshot, resolving an external payload through the configured application store."
   def decode_snapshot(binary, opts) do
@@ -270,12 +277,12 @@ defmodule Spectre.Server.Checkpoint do
   defp store_payload(config, bytes, context, opts) do
     with {:ok, reference} <-
            payload_work(opts, fn -> PayloadStore.put(config, bytes, context) end) do
-      Value.encode(%{format: "spectre/payload-checkpoint", version: 1, reference: reference})
+      encode_value(%{format: "spectre/payload-checkpoint", version: 1, reference: reference})
     end
   end
 
   defp restore_payload(bytes, opts, revision) do
-    case Value.decode(bytes, allowed_structs: @records) do
+    case decode_snapshot(bytes) do
       {:ok, %{format: "spectre/payload-checkpoint", version: 1, reference: reference}} ->
         fetch_payload(Keyword.get(opts, :payload_store), reference, opts, revision)
 
@@ -336,7 +343,7 @@ defmodule Spectre.Server.Checkpoint do
 
   @doc "Validates portable callback data using the checkpoint codec and record allowlist."
   def validate_value(value, opts \\ []) do
-    Value.validate(value, Keyword.put(opts, :allowed_structs, @records))
+    Value.validate_budgeted(value, Keyword.merge(opts, @codec_options))
   end
 
   @doc "Maximum coordination payload size, reserving space for Store envelopes."

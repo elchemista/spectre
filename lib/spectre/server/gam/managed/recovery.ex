@@ -1,7 +1,7 @@
 defmodule Spectre.Server.GAM.Managed.Recovery do
   @moduledoc false
-  @behaviour Spectre.GAM.Domain.Recovery.Policy
-  alias Spectre.GAM.Domain.Recovery.Policy
+  @behaviour ExGAM.Domain.Recovery.Policy
+  alias ExGAM.Domain.Recovery.Policy
 
   @impl true
   def check(context, opts),

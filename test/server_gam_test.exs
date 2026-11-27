@@ -1,26 +1,26 @@
 # Protocol component tests use the internal Runtime to inject boundary adapters.
 # Application AgentServers always start through the automatic Spectre.Server API.
-Code.require_file("gam/helper.exs", __DIR__)
+Code.require_file("support/gam/helper.exs", __DIR__)
 
 defmodule Spectre.ServerGAMTest do
   use ExUnit.Case, async: false
-  alias Spectre.GAM
-  alias Spectre.GAM.{Candidate, Consent, Domain, Presentation, Scope}
-  alias Spectre.GAM.Mind.Turn
-  alias Spectre.GAM.V04Test.{Fixture, Runtime}
+  alias ExGAM, as: GAM
+  alias ExGAM.{Candidate, Consent, Domain, Presentation, Scope}
+  alias ExGAM.Mind.Turn
+  alias Spectre.Test.GAM.{Fixture, Runtime}
   alias Spectre.Server.GAM, as: Bridge
 
   defmodule Mind do
-    use Spectre.GAM.Mind, ref: "mind:server-bridge-test"
+    use ExGAM.Mind, ref: "mind:server-bridge-test"
     def deliberate(_, _), do: {:ok, []}
   end
 
   defmodule Ingress do
-    defdelegate ref(), to: Spectre.GAM.V04Test.Ingress
-    defdelegate authenticate(d, s, i, g, o), to: Spectre.GAM.V04Test.Ingress
+    defdelegate ref(), to: Spectre.Test.GAM.Ingress
+    defdelegate authenticate(d, s, i, g, o), to: Spectre.Test.GAM.Ingress
 
     def observe(context, %{kind: :presentation_response} = envelope, now, _) do
-      Spectre.GAM.Presentation.response_evidence(
+      ExGAM.Presentation.response_evidence(
         context,
         envelope.presentation,
         envelope.show_act,
@@ -32,7 +32,7 @@ defmodule Spectre.ServerGAMTest do
     end
 
     def observe(context, %Spectre.Input{} = input, now, _) do
-      Spectre.GAM.Ingress.evidence(context, now,
+      ExGAM.Ingress.evidence(context, now,
         proposition: "request:refund",
         stance: :supports,
         issuer_ref: context.authenticated_principal_ref,
@@ -40,18 +40,18 @@ defmodule Spectre.ServerGAMTest do
       )
     end
 
-    defdelegate observe(context, attrs, now, opts), to: Spectre.GAM.V04Test.Ingress
+    defdelegate observe(context, attrs, now, opts), to: Spectre.Test.GAM.Ingress
   end
 
   defmodule Executor do
-    defdelegate executor_ref(), to: Spectre.GAM.V04Test.Executor
-    defdelegate contract_ref(), to: Spectre.GAM.V04Test.Executor
+    defdelegate executor_ref(), to: Spectre.Test.GAM.Executor
+    defdelegate contract_ref(), to: Spectre.Test.GAM.Executor
 
     def execute(act, attempt, _capability, opts) do
       send(opts[:observer], {:effect, act.class})
 
       {:ok, evidence} =
-        Spectre.GAM.Attempt.Executor.outcome_evidence(act, attempt, :succeeded, Runtime.now(),
+        ExGAM.Attempt.Executor.outcome_evidence(act, attempt, :succeeded, Runtime.now(),
           payload: %{receipt: "server-bridge"}
         )
 
@@ -210,7 +210,7 @@ defmodule Spectre.ServerGAMTest do
         mind: Mind,
         ingress: Ingress,
         executors: [{Executor, observer: self()}],
-        name: {:via, Registry, {Spectre.GAM.Domain.Registry, domain_ref}}
+        name: {:via, Registry, {ExGAM.Domain.Registry, domain_ref}}
       )
 
     on_exit(fn -> Fixture.stop_domain(fixture) end)
@@ -344,7 +344,7 @@ defmodule Spectre.ServerGAMTest do
     proposition =
       Presentation.approval_proposition(pending.presentation.ref, pending.show.primary.act.ref)
 
-    projection = Spectre.GAM.Domain.Sequencer.projection(c.fixture.server)
+    projection = ExGAM.Domain.Sequencer.projection(c.fixture.server)
 
     [rejection] =
       projection.evidence |> Map.values() |> Enum.filter(&(&1.proposition == proposition))
@@ -517,7 +517,7 @@ defmodule Spectre.ServerGAMTest do
 
     opts = [bridge_config: config]
     {:pending, pending} = Bridge.propose(:refund, %{amount: 500}, c.context, opts)
-    before = Spectre.GAM.Domain.Sequencer.projection(c.fixture.server)
+    before = ExGAM.Domain.Sequencer.projection(c.fixture.server)
 
     task =
       Task.async(fn -> Bridge.confirm(pending, %Spectre.Input{text: "yes"}, c.context, opts) end)
@@ -526,7 +526,7 @@ defmodule Spectre.ServerGAMTest do
     Process.sleep(max(pending.expires_at - System.system_time(:millisecond) + 1, 1))
     send(worker, :release)
     assert {:error, :consent_expired} = Task.await(task)
-    assert Spectre.GAM.Domain.Sequencer.projection(c.fixture.server) == before
+    assert ExGAM.Domain.Sequencer.projection(c.fixture.server) == before
     refute_receive {:effect, "refund.issue"}, 50
   end
 

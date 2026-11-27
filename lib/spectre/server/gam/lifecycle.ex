@@ -14,9 +14,9 @@ defmodule Spectre.Server.GAM.Lifecycle do
   Reasons and status names remain host facts, not changes to GAM's laws.
   """
 
-  alias Spectre.GAM
-  alias Spectre.GAM.{Evidence, Ingress, Scope, SubmissionContext}
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM, as: GAM
+  alias ExGAM.{Evidence, Ingress, Scope, SubmissionContext}
+  alias ExGAM.Canonical.Value
   alias Spectre.Server.GAM.Managed.Payload
 
   @required [:id, :phase, :kind, :pending_id, :revision]
@@ -147,7 +147,7 @@ defmodule Spectre.Server.GAM.Lifecycle do
 
   defp recover_or_observe(scope, event, digest, opts) do
     with {:ok, records} <-
-           Spectre.GAM.Facade.Access.scoped_query(
+           ExGAM.Facade.Access.scoped_query(
              scope,
              {:evidence_proposition, proposition(event.id)}
            ) do

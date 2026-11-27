@@ -229,7 +229,7 @@ defmodule Spectre.Server.PendingLifecycle do
 
   def receipt?(%{event: event}, {:lifecycle_recorded, receipt}) do
     is_map(receipt) and Map.get(receipt, :event_id) == event.id and
-      Map.get(receipt, :event_digest) == Spectre.GAM.Canonical.Value.digest!(event) and
+      Map.get(receipt, :event_digest) == ExGAM.Canonical.Value.digest!(event) and
       is_list(Map.get(receipt, :evidence_refs)) and Map.get(receipt, :evidence_refs) != []
   end
 

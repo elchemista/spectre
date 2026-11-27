@@ -11,8 +11,8 @@ defmodule Spectre.Server.ManagedIdentityTest do
     assert {:ok, other} = Identity.normalize(Map.put(identity, :tenant, "south"))
     assert {:ok, first} = Identity.normalize(identity)
 
-    refute Spectre.GAM.Canonical.Value.digest!(first) ==
-             Spectre.GAM.Canonical.Value.digest!(other)
+    refute ExGAM.Canonical.Value.digest!(first) ==
+             ExGAM.Canonical.Value.digest!(other)
   end
 
   test "conflicting alias keys and process handles are rejected" do

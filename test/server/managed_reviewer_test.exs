@@ -1,7 +1,6 @@
 defmodule Spectre.Server.ManagedReviewerTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM
   alias Spectre.Server
 
   defmodule Effect do
@@ -119,7 +118,7 @@ defmodule Spectre.Server.ManagedReviewerTest do
     support = [supporting_refs: [duty.act_ref]]
 
     assert {:error, :untrusted_reviewer_transport} =
-             GAM.resolve_duty(server, duty.ref, :ratify, support)
+             Spectre.GAM.resolve_duty(server, duty.ref, :ratify, support)
 
     assert {:error, :untrusted_governance_transport} =
              Server.GAM.Managed.dispose(
@@ -130,11 +129,13 @@ defmodule Spectre.Server.ManagedReviewerTest do
                c.reviewer
              )
 
-    assert {:ok, %{primary: %{decision: %{outcome: :admitted}}}} = GAM.revoke(server)
+    assert {:ok, %{primary: %{decision: %{outcome: :admitted}}}} = Spectre.GAM.revoke(server)
     Process.sleep(max(deadline - System.system_time(:millisecond) + 10, 0))
 
     assert {:ok, %{primary: %{decision: %{outcome: :admitted}, act: review_act}}} =
-             review(c.reviewer, fn -> GAM.resolve_duty(server, duty.ref, :ratify, support) end)
+             review(c.reviewer, fn ->
+               Spectre.GAM.resolve_duty(server, duty.ref, :ratify, support)
+             end)
 
     assert {:ok, before} = Server.gam_view(server)
     assert [%{status: :disposed, disposition_act_ref: disposition_ref}] = before.duties
@@ -156,7 +157,9 @@ defmodule Spectre.Server.ManagedReviewerTest do
     duty = create_duty(server)
 
     assert {:error, :reviewer_not_configured} =
-             GAM.resolve_duty(server, duty.ref, :accept_loss, supporting_refs: [duty.act_ref])
+             Spectre.GAM.resolve_duty(server, duty.ref, :accept_loss,
+               supporting_refs: [duty.act_ref]
+             )
 
     assert {:ok, view} = Server.gam_view(server)
     assert [%{status: :open}] = view.duties
@@ -167,21 +170,27 @@ defmodule Spectre.Server.ManagedReviewerTest do
        c do
     server = start_supervised!({Server, options(c.reviewer)})
     duty = create_duty(server)
-    assert {:error, _} = review(c.reviewer, fn -> GAM.revoke(server) end)
+    assert {:error, _} = review(c.reviewer, fn -> Spectre.GAM.revoke(server) end)
 
     assert {:ok, %{primary: %{decision: %{outcome: :refused}, act: nil}}} =
              review(c.reviewer, fn ->
-               GAM.resolve_duty(server, duty.ref, :ratify, supporting_refs: ["unknown-record"])
+               Spectre.GAM.resolve_duty(server, duty.ref, :ratify,
+                 supporting_refs: ["unknown-record"]
+               )
              end)
 
     assert {:ok, %{primary: %{decision: %{outcome: :admitted}}}} =
              review(c.reviewer, fn ->
-               GAM.resolve_duty(server, duty.ref, :accept_loss, supporting_refs: [duty.act_ref])
+               Spectre.GAM.resolve_duty(server, duty.ref, :accept_loss,
+                 supporting_refs: [duty.act_ref]
+               )
              end)
 
     assert {:error, _} =
              review(c.reviewer, fn ->
-               GAM.resolve_duty(server, duty.ref, :ratify, supporting_refs: [duty.act_ref])
+               Spectre.GAM.resolve_duty(server, duty.ref, :ratify,
+                 supporting_refs: [duty.act_ref]
+               )
              end)
   end
 

@@ -1,4 +1,4 @@
-# Spectre 0.4.1 API guide
+# Spectre 0.4.2 API guide
 
 New applications use a declarative `Spectre.Agent` and an application
 `Spectre.Server`. Add a `Spectre.Stack` to install capabilities. This page maps the API to

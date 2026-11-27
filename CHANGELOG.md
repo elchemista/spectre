@@ -7,6 +7,14 @@ preserve the documented safe contract; they may tighten behavior that violated
 an already-published security or privacy invariant, with the correction and
 migration called out explicitly below.
 
+## 0.4.2 — 2026-11-27
+
+- Run the Governed Act Model through the Hex dependency `ex_gam` and its OTP
+  application. Spectre continues to provide Managed GAM and its AgentServer APIs.
+- Keep canonical ledger and Server checkpoint formats readable across the
+  upgrade. Integrations that call the kernel directly should use `ExGAM`
+  modules and structs. See [Installation](docs/INSTALLATION.md#upgrading-gam-to-exgam).
+
 ## 0.4.1 — 2026-11-22
 
 ### Added

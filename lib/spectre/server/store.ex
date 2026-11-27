@@ -20,8 +20,8 @@ defmodule Spectre.Server.Store do
   projection group to keep it in memory. Incomplete groups fail before Managed
   bootstrap writes its authority profile.
 
-  These callbacks retain the contracts of `Spectre.GAM.Ledger.Store` and
-  `Spectre.GAM.Domain.Projection.Store`: atomic idempotent appends, bounded
+  These callbacks retain the contracts of `ExGAM.Ledger.Store` and
+  `ExGAM.Domain.Projection.Store`: atomic idempotent appends, bounded
   indexed batch reads, generation-fenced projection changes and exact-cursor
   reads. An uncertain append acknowledgement is `{:error, :ambiguous}`. A
   projection is rebuilt from verified history and never supplies authority.
@@ -33,8 +33,8 @@ defmodule Spectre.Server.Store do
   callback group is selected before the history-only `gam_ledger/1` fallback.
   """
 
-  alias Spectre.GAM.Domain.Projection.Store, as: ProjectionStore
-  alias Spectre.GAM.Ledger
+  alias ExGAM.Domain.Projection.Store, as: ProjectionStore
+  alias ExGAM.Ledger
 
   @type store_ref :: term()
   @type entry :: %{revision: pos_integer(), value: term()}
@@ -65,7 +65,7 @@ defmodule Spectre.Server.Store do
   Domains. Adapters without this capability may return `:not_configured`.
   """
   @callback gam_ledger(term()) ::
-              {:ok, Spectre.GAM.Ledger.Store.config()} | :not_configured | {:error, term()}
+              {:ok, ExGAM.Ledger.Store.config()} | :not_configured | {:error, term()}
   @optional_callbacks gam_ledger: 1
 
   @doc """
@@ -78,8 +78,8 @@ defmodule Spectre.Server.Store do
   @callback gam_domain(term()) ::
               {:ok,
                %{
-                 ledger: Spectre.GAM.Ledger.Store.config(),
-                 projection: Spectre.GAM.Domain.Projection.Store.config()
+                 ledger: ExGAM.Ledger.Store.config(),
+                 projection: ExGAM.Domain.Projection.Store.config()
                }}
               | :not_configured
               | {:error, term()}

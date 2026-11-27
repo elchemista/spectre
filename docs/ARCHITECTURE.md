@@ -15,7 +15,7 @@ mounts and start independent Activities under the same Managed GAM Domain.
 | Application `Spectre.Server` module | Conversation and OTP callback implementations. The provided Context carries state and requested commands. |
 | `Spectre.Server.Runtime` | OTP owner, command outbox, workers, streams, pending intentions and checkpoints. |
 | `Spectre.Activity` | One startable execution with local state, callbacks, tool scope and revision. |
-| `Spectre.GAM` kernel | Scoped observations, admission, recorded Acts, attempts, outcomes, evidence and unresolved duties. |
+| `ExGAM` kernel | Scoped observations, admission, recorded Acts, attempts, outcomes, evidence and unresolved duties. |
 | Host application | Authenticated identity, allowed operations, policy, registered effect adapters, storage and independent real-world review. |
 
 Stack resources run under their own supervisor when the application starts a

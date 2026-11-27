@@ -271,9 +271,9 @@ defmodule Spectre.Server.PayloadStorageTest do
 
     for server <- [client, owner] do
       state = server |> :sys.get_state() |> Map.fetch!(:managed_owner) |> :sys.get_state()
-      assert {:ok, snapshot} = Spectre.GAM.Ledger.Store.load(state.store, state.refs.domain, [])
+      assert {:ok, snapshot} = ExGAM.Ledger.Store.load(state.store, state.refs.domain, [])
       assert_private_absent(snapshot, url)
-      projection = Spectre.GAM.Domain.Sequencer.projection(state.domain)
+      projection = ExGAM.Domain.Sequencer.projection(state.domain)
       assert_private_absent(projection, url)
     end
 
@@ -366,7 +366,7 @@ defmodule Spectre.Server.PayloadStorageTest do
 
     refute_receive {:opened, _}
     state = server |> :sys.get_state() |> Map.fetch!(:managed_owner) |> :sys.get_state()
-    assert {:ok, snapshot} = Spectre.GAM.Ledger.Store.load(state.store, state.refs.domain, [])
+    assert {:ok, snapshot} = ExGAM.Ledger.Store.load(state.store, state.refs.domain, [])
     assert_private_absent(snapshot, url)
     assert {:ok, view} = Server.gam_view(server)
 

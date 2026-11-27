@@ -4,9 +4,9 @@ AgentServer manages GAM automatically. For startup, application callbacks and
 the boundary between application policy and kernel invariants, see
 [Automatic GAM](MANAGED_GAM.md).
 
-The Governed Act Model kernel lives under `Spectre.GAM`. AgentServer connects
-to it through Managed GAM. The source of its principles is the
-[GAM manifesto](https://spectre.guide/en/governed-act-model).
+AgentServer connects to the Governed Act Model kernel through Managed GAM.
+Spectre installs and starts the [ExGAM library](https://hex.pm/packages/ex_gam).
+The [GAM manifesto](https://spectre.guide/en/governed-act-model) describes the model.
 
 This guide explains the integration. An application still has to define its
 host boundary and authorization model; installing Spectre does not grant an
@@ -101,7 +101,7 @@ context. It cannot grant authority or execute deletion itself. The consumer rend
 and acknowledges the presentation, then submits the user's separate decision.
 See [Automatic GAM](MANAGED_GAM.md) for the transport and persistence contract.
 
-`Spectre.GAM` also exposes the kernel's standalone protocol API for integrations
+`ExGAM` also exposes the kernel's standalone protocol API for integrations
 outside AgentServer. That low-level API is not a second Server startup mode and
 is not required to author an Agent or Skill. Its callers must preserve the same
 admission, commitment, evidence and execution rules.
@@ -215,7 +215,7 @@ that boundary at the actual resource. Audit evidence cannot retroactively
 authorize a bypass.
 
 The existing `Spectre.Governance` APIs for definition changes and the 0.3 policy
-DSL are distinct from the imported `Spectre.GAM` act kernel. Do not treat an old
+DSL are distinct from the `ExGAM` act kernel. Do not treat an old
 policy declaration as a migrated mandate. Follow [Migration](MIGRATING_TO_0_4.md)
 and retain history when changing runtime ownership.
 

@@ -1,4 +1,4 @@
-# Spectre 0.4.1 guide for application authors
+# Spectre 0.4.2 guide for application authors
 
 Use **Stack → Agent → Server** for new applications. The Stack installs packages;
 the Agent declares recognition; the Server implements callbacks inside the

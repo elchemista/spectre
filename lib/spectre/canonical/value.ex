@@ -170,11 +170,13 @@ defmodule Spectre.Canonical.Value do
          {:ok, max_depth} <- non_negative_option(opts, :max_depth, @default_max_depth),
          {:ok, max_collection_size} <-
            non_negative_option(opts, :max_collection_size, @default_max_collection_size),
+         struct_tags = Keyword.get(opts, :struct_tags, %{}),
          {:ok, allowed_structs} <-
-           allowed_structs(Keyword.get(opts, :allowed_structs, []), profile) do
+           allowed_structs(Keyword.get(opts, :allowed_structs, []), struct_tags, profile) do
       {:ok,
        %{
          allowed_structs: allowed_structs,
+         struct_tags: struct_tags,
          profile: profile,
          max_bytes: max_bytes,
          used_bytes: 0,
@@ -207,16 +209,25 @@ defmodule Spectre.Canonical.Value do
     end
   end
 
-  @spec allowed_structs(term(), :general | :gam) :: {:ok, map()} | {:error, reason()}
-  defp allowed_structs(modules, profile) when is_list(modules) do
+  @spec allowed_structs(term(), term(), :general | :gam) :: {:ok, map()} | {:error, reason()}
+  defp allowed_structs(modules, tags, profile) when is_list(modules) and is_map(tags) do
     if module_list?(modules, profile) do
-      {:ok, Map.new(modules, &{Atom.to_string(&1), &1})}
+      names = Map.new(modules, &{struct_tag(&1, tags), &1})
+
+      if map_size(tags) == 0 or
+           (map_size(names) == length(Enum.uniq(modules)) and
+              Enum.all?(Map.keys(names), &is_binary/1)),
+         do: {:ok, names},
+         else: {:error, :invalid_canonical_struct_tags}
     else
       {:error, {:invalid_allowed_structs, modules}}
     end
   end
 
-  defp allowed_structs(modules, _profile), do: {:error, {:invalid_allowed_structs, modules}}
+  defp allowed_structs(modules, _tags, _profile),
+    do: {:error, {:invalid_allowed_structs, modules}}
+
+  defp struct_tag(module, tags), do: Map.get(tags, module, Atom.to_string(module))
 
   defp module_list?(modules, :general),
     do: Enum.all?(modules, &(is_atom(&1) and not is_nil(&1)))
@@ -294,7 +305,7 @@ defmodule Spectre.Canonical.Value do
 
   defp encode_term(value, context, path, depth) when is_struct(value) do
     module = value.__struct__
-    module_name = Atom.to_string(module)
+    module_name = struct_tag(module, context.struct_tags)
 
     if Map.get(context.allowed_structs, module_name) == module do
       fields = Map.from_struct(value)

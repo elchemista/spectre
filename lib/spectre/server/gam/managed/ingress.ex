@@ -1,7 +1,7 @@
 defmodule Spectre.Server.GAM.Managed.Ingress do
   @moduledoc false
-  use Spectre.GAM.Ingress, ref: "spectre:managed:ingress:v1"
-  alias Spectre.GAM
+  use ExGAM.Ingress, ref: "spectre:managed:ingress:v1"
+  alias ExGAM, as: GAM
   alias Spectre.Server.GAM.{Invocation, Lifecycle}
   alias Spectre.Server.GAM.Managed.{Gate, Payload}
 

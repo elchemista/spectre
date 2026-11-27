@@ -7,8 +7,8 @@ defmodule Spectre.Server.GAM.Managed.Approval do
   Transport adapters implement `send_message/2`. UI acknowledgements and decisions
   enter through the AgentServer's authenticated consumer, never model output.
   """
-  alias Spectre.GAM
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM, as: GAM
+  alias ExGAM.Canonical.Value
   alias Spectre.Server.Store.Port, as: Store
 
   @doc "Sends an approval-protocol message. A successful transport acknowledgement records delivery only."

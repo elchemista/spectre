@@ -2,7 +2,7 @@ defmodule Spectre.Server.GAM.Managed.Gate do
   @moduledoc false
   use GenServer
   alias Spectre.Server.GAM.Managed.Approval
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Canonical.Value
 
   @doc false
   def prepare_external(server, presentation, approver, deadline, revision, skill),

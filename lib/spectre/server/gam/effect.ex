@@ -8,7 +8,7 @@ defmodule Spectre.Server.GAM.Effect do
   This module neither creates authority nor performs admission.
   """
 
-  alias Spectre.GAM.Canonical.Value, as: CanonicalValue
+  alias ExGAM.Canonical.Value, as: CanonicalValue
   alias Spectre.Stack.{Binding, Definition, Effects, Value}
 
   @type t :: %{

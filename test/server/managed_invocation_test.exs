@@ -1,7 +1,7 @@
 defmodule Spectre.Server.ManagedInvocationTest do
   use ExUnit.Case, async: true
 
-  alias Spectre.GAM.{SubmissionContext, Scope}
+  alias ExGAM.{SubmissionContext, Scope}
   alias Spectre.Server.GAM.Invocation
   alias Spectre.Server.GAM.Managed.Ingress
 
@@ -92,7 +92,7 @@ defmodule Spectre.Server.ManagedInvocationTest do
 
   test "existing manual root bridges do not acquire a new ingress requirement", data do
     scope = %Scope{
-      domain: Spectre.GAM.Domain.handle(self(), data.context.domain_ref),
+      domain: ExGAM.Domain.handle(self(), data.context.domain_ref),
       context: data.context
     }
 

@@ -1,6 +1,6 @@
 # Installation
 
-Spectre requires Elixir `~> 1.19`. Vettore is a required dependency. JSON uses
+Spectre requires Elixir `~> 1.19` and installs Vettore and ExGAM automatically. JSON uses
 Elixir's standard `JSON` module; applications using Jason directly must declare
 Jason themselves.
 
@@ -21,7 +21,7 @@ follow [Migration](MIGRATING_TO_0_4.md) for the changes to Agents, Servers and t
 ```elixir
 defp deps do
   [
-    {:spectre, "~> 0.4.1"}
+    {:spectre, "~> 0.4.2"}
   ]
 end
 ```
@@ -42,6 +42,23 @@ saved application state and continuations are compatible with the new code
 and returns the validated projection. Governed commands still follow their
 original GAM recovery rules.
 [Checkpoint migration](AGENT_SERVER.md#checkpoints-and-reconciliation).
+
+## Upgrading GAM to ExGAM
+
+The AgentServer calls `Spectre.GAM.submit/4`, `Spectre.GAM.revoke/1` and
+`Spectre.GAM.resolve_duty/4` stay available. For direct kernel calls, use
+`ExGAM` and update aliases, struct patterns, behaviours and configured adapter
+modules together. For example, match `%ExGAM.Presentation{}` in a custom consent
+interpreter. Existing Stack packages can still use their storage and codec
+entry points during this transition.
+
+Stop the old Domain writer before reopening shared history. Keep the Domain
+reference, storage options and authority configuration. ExGAM verifies the
+same canonical ledger and rebuilds derived projection rows on cold startup.
+Spectre reads its existing checkpoint and detached payload record tags.
+Authenticate again to open or resume scopes with the new runtime. Move any
+projection-load telemetry handler to `[:ex_gam, :projection, :load]`.
+[ExGAM host integration](https://github.com/elchemista/ex_gam/blob/main/docs/spectre.md).
 
 ## Install from Git
 

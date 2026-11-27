@@ -1,7 +1,7 @@
 defmodule Spectre.Server.GAM.Managed.Executor do
   @moduledoc false
-  @behaviour Spectre.GAM.Attempt.Executor
-  alias Spectre.GAM
+  @behaviour ExGAM.Attempt.Executor
+  alias ExGAM, as: GAM
   alias Spectre.Server.GAM.{Effect, Managed}
   alias Spectre.Server.GAM.Managed.{Broker, Content, Payload}
 
@@ -112,7 +112,7 @@ defmodule Spectre.Server.GAM.Managed.Executor do
   defp public_reason(reason) when is_atom(reason), do: reason
 
   defp public_reason(reason) do
-    %{digest: Spectre.GAM.Canonical.Value.digest!(reason)}
+    %{digest: ExGAM.Canonical.Value.digest!(reason)}
   end
 
   @spec result(GAM.Act.t(), GAM.Attempt.t(), atom(), term(), keyword()) :: term()

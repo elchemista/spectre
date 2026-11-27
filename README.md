@@ -50,7 +50,7 @@ principles and [GAM in Spectre](docs/GAM.md) for their implementation.
 Requires Elixir `~> 1.19`.
 
 ```elixir
-{:spectre, "~> 0.4.1"}
+{:spectre, "~> 0.4.2"}
 ```
 
 Run `mix deps.get` and commit `mix.lock`. [Installation](docs/INSTALLATION.md)

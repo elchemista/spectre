@@ -1,7 +1,7 @@
 defmodule Spectre.Server.Store.Ledger do
   @moduledoc false
-  @behaviour Spectre.GAM.Ledger.Store
-  alias Spectre.GAM.Ledger
+  @behaviour ExGAM.Ledger.Store
+  alias ExGAM.Ledger
 
   # Translates the kernel port to the host's single Server.Store behaviour.
   # The kernel facade remains responsible for guarded calls and verification.

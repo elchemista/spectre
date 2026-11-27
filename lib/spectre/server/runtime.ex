@@ -299,9 +299,9 @@ defmodule Spectre.Server.Runtime do
         _ -> []
       end
 
-    case Spectre.GAM.Domain.Recovery.Policy.normalize(config[:recovery_policy]) do
+    case ExGAM.Domain.Recovery.Policy.normalize(config[:recovery_policy]) do
       {:ok, policy} ->
-        Spectre.GAM.Domain.Recovery.Policy.recover(
+        ExGAM.Domain.Recovery.Policy.recover(
           policy,
           %{domain_ref: config[:domain], phase: phase, reason: reason, last_verified: nil},
           Keyword.get(config, :recovery_timeout, 5_000)
@@ -875,7 +875,7 @@ defmodule Spectre.Server.Runtime do
     key = Keyword.get(opts, :key)
 
     fingerprint =
-      Spectre.GAM.Canonical.Value.digest!({operation, arguments, Keyword.delete(opts, :key)})
+      ExGAM.Canonical.Value.digest!({operation, arguments, Keyword.delete(opts, :key)})
 
     case Map.get(state.external_submissions, key) do
       %{id: id, fingerprint: ^fingerprint} ->
@@ -914,8 +914,7 @@ defmodule Spectre.Server.Runtime do
 
     provenance = %{
       source: :external_actor,
-      submitter_ref:
-        Spectre.GAM.Canonical.Value.digest!({state.submission_epoch, inspect(caller)})
+      submitter_ref: ExGAM.Canonical.Value.digest!({state.submission_epoch, inspect(caller)})
     }
 
     opts =
@@ -3781,7 +3780,7 @@ defmodule Spectre.Server.Runtime do
         pending_id: pending.id
       }
 
-      event_id = "consent-expired:" <> Spectre.GAM.Canonical.Value.digest!({pending.id, revision})
+      event_id = "consent-expired:" <> ExGAM.Canonical.Value.digest!({pending.id, revision})
       receive_result(state, worker, {:consent, :expired}, event_id)
     end
   end

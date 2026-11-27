@@ -1,7 +1,7 @@
 defmodule Spectre.Server.ActivityFenceTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM.Ledger.Store, as: Ledger
+  alias ExGAM.Ledger.Store, as: Ledger
   alias Spectre.Server.Activities
   alias Spectre.Server.GAM.Managed
   alias Spectre.Server.Store.Port, as: Store

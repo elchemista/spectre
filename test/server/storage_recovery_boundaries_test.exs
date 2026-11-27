@@ -66,7 +66,7 @@ defmodule Spectre.Server.StorageRecoveryBoundariesTest do
   end
 
   defmodule ControlledRetry do
-    @behaviour Spectre.GAM.Domain.Recovery.Policy
+    @behaviour ExGAM.Domain.Recovery.Policy
 
     def check(_, _), do: :ok
 

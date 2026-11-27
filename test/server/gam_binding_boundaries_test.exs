@@ -1,16 +1,16 @@
-Code.require_file("../gam/helper.exs", __DIR__)
+Code.require_file("../support/gam/helper.exs", __DIR__)
 
 defmodule Spectre.Server.GAMBindingBoundariesTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM
-  alias Spectre.GAM.{Domain, Scope}
-  alias Spectre.GAM.Mind.Turn
-  alias Spectre.GAM.V04Test.{Fixture, Runtime}
+  alias ExGAM, as: GAM
+  alias ExGAM.{Domain, Scope}
+  alias ExGAM.Mind.Turn
+  alias Spectre.Test.GAM.{Fixture, Runtime}
   alias Spectre.Server.GAM, as: Bridge
 
   defmodule Mind do
-    use Spectre.GAM.Mind, ref: "mind:binding-boundaries"
+    use ExGAM.Mind, ref: "mind:binding-boundaries"
     def deliberate(_turn, _opts), do: {:ok, []}
   end
 
@@ -40,7 +40,7 @@ defmodule Spectre.Server.GAMBindingBoundariesTest do
       Fixture.start_domain(
         namespace: namespace,
         mind: Mind,
-        name: {:via, Registry, {Spectre.GAM.Domain.Registry, domain_ref}}
+        name: {:via, Registry, {ExGAM.Domain.Registry, domain_ref}}
       )
 
     on_exit(fn -> Fixture.stop_domain(f) end)

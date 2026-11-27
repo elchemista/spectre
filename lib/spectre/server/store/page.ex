@@ -6,7 +6,7 @@ defmodule Spectre.Server.Store.Page do
   depending on UUID timestamps or retaining a second copy of the stored values.
   A cursor is bound to its prefix. Pages are live views, not snapshot isolation.
   """
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Canonical.Value
   alias Spectre.Server.Store
 
   @type cursor :: {:store_page, 1, binary(), binary()}

@@ -1,7 +1,7 @@
 defmodule Spectre.Server.GAM.Managed.Binding do
   @moduledoc false
-  alias Spectre.GAM
-  alias Spectre.GAM.Mind.Turn
+  alias ExGAM, as: GAM
+  alias ExGAM.Mind.Turn
   alias Spectre.Server.GAM.Effect
   alias Spectre.Server.GAM.Managed.{Approval, Content, Executor, Gate, Ingress, Material}
 

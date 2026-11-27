@@ -7,7 +7,7 @@ defmodule Spectre.Stack.Effects do
   Version 1 tool descriptors and manual GAM bindings remain supported.
   """
 
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Canonical.Value
 
   @fields [
     :contract,

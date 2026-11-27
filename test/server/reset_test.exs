@@ -163,7 +163,7 @@ defmodule Spectre.Server.ResetTest do
         )
 
     def delete(ref, key, revision), do: Managed.Store.delete(ref.journal, key, revision)
-    def gam_ledger(ref), do: {:ok, {Spectre.GAM.Ledger.Store.ETS, server: ref.ledger}}
+    def gam_ledger(ref), do: {:ok, {ExGAM.Ledger.Store.ETS, server: ref.ledger}}
 
     defp mutation_result(ref, {:spectre_server_session, _} = key, {:ok, _} = acquired) do
       case Elixir.Agent.get(ref.control, & &1) do
@@ -623,7 +623,7 @@ defmodule Spectre.Server.ResetTest do
     %{
       control: start_supervised!({Elixir.Agent, fn -> :online end}),
       journal: start_supervised!({Managed.Store, []}),
-      ledger: start_supervised!({Spectre.GAM.Ledger.Store.ETS, []})
+      ledger: start_supervised!({ExGAM.Ledger.Store.ETS, []})
     }
   end
 

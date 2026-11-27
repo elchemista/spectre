@@ -1,7 +1,7 @@
 defmodule Spectre.Server.Session do
   @moduledoc false
 
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Canonical.Value
   alias Spectre.Server.Store.{Binding, Disk, Port}
   alias Spectre.Server.TaskGuard
 

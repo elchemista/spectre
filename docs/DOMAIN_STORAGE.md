@@ -77,8 +77,8 @@ Row changes and their cursor advance atomically. Sharing a provider does not add
 a transaction spanning all three resources: checkpoint, history and projection
 retain their existing durability barriers.
 
-The existing `Spectre.GAM.Ledger.Store` and
-`Spectre.GAM.Domain.Projection.Store` contracts remain available to standalone
+The existing `ExGAM.Ledger.Store` and
+`ExGAM.Domain.Projection.Store` contracts remain available to standalone
 Domains and existing adapters. Managed first uses an explicit `gam_domain/1`,
 then the unified callback groups, then the older history-only `gam_ledger/1`
 fallback. Only an absent callback or `:not_configured` permits fallback; a
@@ -100,11 +100,11 @@ the demo includes that migration. Fresh installations use `migration_sql/1`.
 The default policy waits: failed verification cannot authorize execution.
 The Managed owner remains available after a Domain storage failure. The host
 can repair storage and retry, or explicitly choose a new RAM Domain. Optional
-`recover/2` on `Spectre.GAM.Domain.Recovery.Policy` selects the lifecycle action:
+`recover/2` on `ExGAM.Domain.Recovery.Policy` selects the lifecycle action:
 
 ```elixir
 defmodule MyApp.StorageRecovery do
-  @behaviour Spectre.GAM.Domain.Recovery.Policy
+  @behaviour ExGAM.Domain.Recovery.Policy
 
   def check(_verified_head, _options), do: :ok
 

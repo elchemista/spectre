@@ -347,7 +347,7 @@ The runtime uses distinct immutable event ids for three phases:
 The event carries the pending id and revision, command id, reason, optional
 policy/deadline, original interaction references and available Candidate/show
 references. A timer includes the schedule identity that caused it. Evidence
-binds the exact event id and `Spectre.GAM.Canonical.Value.digest!(event)` to the
+binds the exact event id and `ExGAM.Canonical.Value.digest!(event)` to the
 authenticated Scope/principal. The bridge's receipt identifies the event digest
 and the real `evidence_refs`; an ordinary user Evidence or an unverified map is
 insufficient.

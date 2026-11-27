@@ -1,20 +1,20 @@
-# Spectre public API — 0.4.1
+# Spectre public API — 0.4.2
 
-This file is the normative public API manifest for Spectre `0.4.1`. It retains
+This file is the normative public API manifest for Spectre `0.4.2`. It retains
 the recoverable conversational, operational, inference, streaming, receipt,
 and determinism surfaces. This version includes typed Stack integrations,
 reusable Flow Ports and the on-demand Activity API. It also provides the native
 Router Adapter behaviour, scoped requests and executable adapter conformance.
-The Agent/Server API and the imported `Spectre.GAM` boundary are listed below
-alongside the retained compatibility API. See [Agent and Server](AGENT_SERVER.md)
-for ownership and migration requirements.
+The AgentServer and compatibility APIs are listed below. The kernel and its
+record types are documented by [ExGAM](https://hexdocs.pm/ex_gam/). See
+[Agent and Server](AGENT_SERVER.md) for ownership and migration requirements.
 This is the machine-checked callable inventory, not an architecture tutorial.
 For new code start with [AgentServer](AGENT_SERVER.md), [Stack tools](STACK_TOOLS.md)
 and [GAM](GAM.md). [Behaviours and adapters](BEHAVIOURS.md) groups every public
 behaviour with its required/optional callbacks, configuration and examples;
 use [migration](MIGRATING_TO_0_4.md) for the retained Instance API.
 
-The inventory includes the Server and GAM additions listed below, alongside the
+The inventory includes the Server and Managed GAM APIs alongside the
 retained compatibility surface, including all public behaviour callbacks. The
 convention-based adapter prepare/invoke/project contract and Stack-generated
 private helpers are documented in [Stack tools](STACK_TOOLS.md), rather than
@@ -678,83 +678,7 @@ Mix project version.
 - `Mix.Tasks.Spectre.IntentDataset.Export`
 
 - `Spectre.GAM`
-  - functions: `acts/1`, `acts/2`, `authenticate/3`, `authenticate/4`, `authority/1`, `authority/2`, `continue_turn/3`, `declassifications/1`, `declassify_evidence/4`, `declassify_evidence/5`, `definition/2`, `delegate_mandate/3`, `delegate_mandate/4`, `devolve_mandate/4`, `devolve_mandate/5`, `dispatch_status/2`, `dispose_duty/3`, `dispose_duty/4`, `duties/1`, `duties/2`, `erasures/1`, `head/1`, `issue_mandate/3`, `issue_mandate/4`, `lookup_domain/1`, `observe/2`, `observe/3`, `open_scope/2`, `open_scope/3`, `open_scope/4`, `open_scope/5`, `open_turn/2`, `open_turn/3`, `prepare_presentation/2`, `prepare_presentation/3`, `propose/2`, `propose/3`, `record_derivation/3`, `record_derivation/4`, `record_late_observation/3`, `record_late_observation/4`, `record_outcome/2`, `record_outcome/3`, `recover_proposal/2`, `register_principal/3`, `register_principal/4`, `request_erasure/3`, `request_erasure/4`, `restrict_mandate/4`, `restrict_mandate/5`, `resume_scope/2`, `revise_definition/3`, `revise_definition/4`, `revise_host_profile/4`, `revise_host_profile/5`, `revise_surface/4`, `revise_surface/5`, `revoke_mandate/3`, `revoke_mandate/4`, `show_presentation/3`, `show_presentation/4`, `start_domain/2`, `start_domain/3`, `surface/1`, `turn/2`, `turn/3`, `turn/4`, `version/0`, `view/1`
-- `Spectre.GAM.Act`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `new/1`, `reservations?/1`, `row?/2`, `targets?/2`
-- `Spectre.GAM.Attempt`
-  - functions: `canonical/1`, `digest/1`, `from_canonical/1`, `new/1`
-- `Spectre.GAM.Candidate`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `material/1`, `new/1`, `presentation_binding/1`, `presentation_binding/2`, `presentation_binding_ref/1`, `presentation_binding_ref/2`, `request_fields/0`
-- `Spectre.GAM.Condition`
-  - functions: `attenuates?/2`, `attenuation/2`, `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `new/1`
-- `Spectre.GAM.Consent`
-  - functions: `data_digest/1`, `new/1`, `validate_purpose/3`
-- `Spectre.GAM.Constitution`
-  - functions: `canonical/1`, `ref/1`, `ref!/1`, `rule_value/2`, `rule_value/3`, `validate/1`
-- `Spectre.GAM.Decision`
-  - functions: `admitted?/1`, `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `new/1`, `reservations?/1`
-- `Spectre.GAM.Declassification`
-  - functions: `bind_producer/2`, `canonical/1`, `content_ref/1`, `decode_draft/1`, `digest/1`, `draft/2`, `from_canonical/1`, `from_draft/3`, `label_refs/1`, `new/1`, `owner_refs/1`, `required_target_refs/2`, `validate_producer/2`, `validate_transition/3`
-- `Spectre.GAM.Disclosure`
-  - functions: `canonical/1`, `from_canonical/1`, `labels_covered?/2`, `new/1`, `validate_boundary/4`, `verify_sources/2`
-- `Spectre.GAM.Duty`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `new/1`
-- `Spectre.GAM.Erasure`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `from_request_draft/2`, `new/1`, `request_draft/1`
-- `Spectre.GAM.Evidence`
-  - functions: `canonical/1`, `content_ref/1`, `current_at?/2`, `current_at?/3`, `digest/1`, `from_canonical/1`, `new/1`, `normalize_labels/1`, `opposes?/2`, `temporal_status/2`
-- `Spectre.GAM.Genesis`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `new/1`
-- `Spectre.GAM.HostProfile`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `new/1`
-- `Spectre.GAM.Label`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `new/1`, `normalize_many/1`
-- `Spectre.GAM.Mandate`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `from_issue_draft/2`, `issue_draft/1`, `new/1`, `root?/1`
-- `Spectre.GAM.Outcome`
-  - functions: `canonical/1`, `content_ref/1`, `correction?/1`, `definitive_no_effect?/1`, `digest/1`, `evidence_stance/1`, `from_canonical/1`, `new/1`, `proposition/4`
-- `Spectre.GAM.Presentation`
-  - functions: `approval_proposition/2`, `approval_refs/1`, `canonical/1`, `consent_material/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `material/1`, `new/1`, `response_evidence/6`, `show_class/0`, `show_consequence/1`, `show_dimensions/0`, `show_presentation_ref/1`, `show_row/0`, `validate_approval/6`, `validate_approval_with_basis/6`, `validate_candidate/2`, `validate_response_with_basis/6`, `validate_show/2`
-- `Spectre.GAM.Principal`
-  - functions: `canonical/1`, `content_ref/1`, `digest/1`, `from_canonical/1`, `new/1`
-- `Spectre.GAM.Row`
-  - functions: `canonical/1`, `digest/1`, `dimensions/1`, `from_canonical/1`, `known_dimensions/0`, `new/1`, `subset?/2`, `validate/1`
-- `Spectre.GAM.SubmissionContext`
-  - functions: `canonical/1`, `content_ref/1`, `decision_bindings/1`, `digest/1`, `evidence_bindings/1`, `extract_evidence_context/1`, `from_canonical/1`, `from_decision/1`, `from_evidence_bindings/1`, `merge_evidence_bindings/1`, `merge_evidence_bindings/2`, `new/1`, `validate_evidence_bindings/2`
-- `Spectre.GAM.Surface`
-  - functions: `canonical/1`, `classify/2`, `content_ref/1`, `digest/1`, `fallback/2`, `from_canonical/1`, `new/1`, `presentation_required?/2`, `validate_consequence/2`, `validate_facts/4`, `validate_transition/5`, `verify_definition/2`, `verify_definition/3`
-- `Spectre.GAM.Domain`
-  - functions: `child_spec/1`, `handle/2`, `start_link/1`, `whereis/1`, `whereis/2`
-- `Spectre.GAM.Scope`
-  - functions: `domain_ref/1`, `new/2`, `ref/1`
-- `Spectre.GAM.Mind`
-  - functions: `candidate/2`, `candidate/3`, `deliberate/2`, `deliberate/3`, `deliberate/4`, `evidence/3`
-  - macros: `__using__/1`
-  - callbacks: `deliberate/2`, `deliberate/3`, `ref/0`
-- `Spectre.GAM.Ingress`
-  - functions: `evidence/3`
-  - macros: `__using__/1`
-  - callbacks: `authenticate/5`, `observe/4`, `ref/0`
-- `Spectre.GAM.Attempt.Executor`
-  - functions: `evidence/4`, `outcome_evidence/5`
-  - macros: `__using__/1`
-  - callbacks: `contract_ref/0`, `execute/4`, `executor_ref/0`
-- `Spectre.GAM.Attempt.Observer`
-  - callbacks: `observe/4`
-- `Spectre.GAM.Secret.Broker`
-  - macros: `__using__/1`
-  - callbacks: `checkout/4`, `profile/0`, `ref/0`
-- `Spectre.GAM.Ledger.Store`
-  - functions: `batch_reads?/1`, `head/2`, `head/3`, `load_from/4`, `normalize/1`, `read_batch/3`, `read_batch/4`
-  - callbacks: `append/5`, `export/2`, `head/2`, `load/2`, `load_from/3`, `lookup_batch/3`, `read_batch/3`
-- `Spectre.GAM.Ledger.Store.Disk`
-  - functions: `child_spec/1`, `start_link/1`
-- `Spectre.GAM.Ledger.Store.Mnesia`
-  - functions: `ensure_tables/0`, `ensure_tables/1`
-- `Spectre.GAM.Ledger.Store.Postgres`
-  - functions: `migration_sql/0`, `migration_sql/1`, `namespace/0`, `namespace/1`
-- `Spectre.GAM.Genesis.Verifier`
-  - callbacks: `verify/2`
+  - functions: `resolve_duty/3`, `resolve_duty/4`, `revoke/1`, `submit/3`, `submit/4`
 
 - `Spectre.Server.PublicProjection`
   - callbacks: `init/1`, `push/2`, `finish/1`
@@ -773,24 +697,6 @@ Mix project version.
 
 - `Spectre.Event.SchemaRegistry`
   - callbacks: `compatible?/3`
-
-- `Spectre.GAM.Clock`
-  - callbacks: `now/0`
-
-- `Spectre.GAM.Definition.Verifier`
-  - callbacks: `verify/2`
-
-- `Spectre.GAM.Domain.Projection.Store`
-  - callbacks: `commit/5`, `fetch/4`, `head/2`, `open/2`, `page/4`, `select/5`
-
-- `Spectre.GAM.Domain.Recovery.Policy`
-  - callbacks: `check/2`, `failed/2`, `recover/2`
-
-- `Spectre.GAM.Id.Source`
-  - callbacks: `generate/0`
-
-- `Spectre.GAM.Payload.Store`
-  - callbacks: `verify/2`
 
 - `Spectre.Governance.GC.InventoryProvider`
   - callbacks: `snapshot/2`

@@ -1,7 +1,7 @@
 defmodule Spectre.MixProject do
   use Mix.Project
 
-  @version "0.4.1"
+  @version "0.4.2"
   @source_url "https://github.com/elchemista/spectre"
   @homepage_url "https://spectre.guide"
   @example_files ~w(
@@ -121,6 +121,7 @@ defmodule Spectre.MixProject do
 
   defp deps do
     [
+      {:ex_gam, "~> 0.1.0"},
       {:uuid_v7, "~> 0.6.0"},
       {:vettore, "~> 0.3.6"},
       {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},
@@ -237,7 +238,7 @@ defmodule Spectre.MixProject do
       ],
       groups_for_modules: [
         AgentServer: ~r/^Spectre\.Server(?:\.|$)/,
-        "Governed Act Model": ~r/^Spectre\.GAM(?:\.|$)/,
+        "Governed Act Model": [Spectre.GAM],
         "Intent datasets": ~r/^Spectre\.IntentDataset(?:\.|$)/,
         "Canonical definitions and projections": [
           Spectre.Authority.Envelope,

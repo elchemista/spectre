@@ -1,10 +1,10 @@
 defmodule Spectre.Server.GAM.Managed.Broker do
   @moduledoc false
-  use Spectre.GAM.Secret.Broker, ref: "spectre:managed:broker:v1", profile: :mediated
+  use ExGAM.Secret.Broker, ref: "spectre:managed:broker:v1", profile: :mediated
 
-  alias Spectre.GAM.{Act, Attempt}
-  alias Spectre.GAM.GovernedAct.Admission.Binding
-  alias Spectre.GAM.Secret.CheckoutReceipt
+  alias ExGAM.{Act, Attempt}
+  alias ExGAM.GovernedAct.Admission.Binding
+  alias ExGAM.Secret.CheckoutReceipt
 
   @doc false
   @spec checkout(CheckoutReceipt.t(), Act.t(), Attempt.t(), keyword()) ::

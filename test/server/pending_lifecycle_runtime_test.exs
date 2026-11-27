@@ -57,7 +57,7 @@ defmodule Spectre.Server.PendingLifecycleRuntimeTest do
       {:lifecycle_recorded,
        %{
          event_id: event.id,
-         event_digest: Spectre.GAM.Canonical.Value.digest!(event),
+         event_digest: ExGAM.Canonical.Value.digest!(event),
          evidence_refs: ["evidence:" <> event.id]
        }}
     end

@@ -1,12 +1,12 @@
-Code.require_file("../gam/helper.exs", __DIR__)
+Code.require_file("../support/gam/helper.exs", __DIR__)
 
 defmodule Spectre.Server.ToolGovernedRuntimeTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM
-  alias Spectre.GAM.{Candidate, Consent, Domain, Presentation, Scope}
-  alias Spectre.GAM.Mind.Turn
-  alias Spectre.GAM.V04Test.{Fixture, Runtime}
+  alias ExGAM, as: GAM
+  alias ExGAM.{Candidate, Consent, Domain, Presentation, Scope}
+  alias ExGAM.Mind.Turn
+  alias Spectre.Test.GAM.{Fixture, Runtime}
   alias Spectre.Server
 
   # Low-level bridge protocol fixture; public managed integration has separate tests.
@@ -19,8 +19,8 @@ defmodule Spectre.Server.ToolGovernedRuntimeTest do
   end
 
   defmodule Ingress do
-    defdelegate ref(), to: Spectre.GAM.V04Test.Ingress
-    defdelegate authenticate(d, s, i, g, o), to: Spectre.GAM.V04Test.Ingress
+    defdelegate ref(), to: Spectre.Test.GAM.Ingress
+    defdelegate authenticate(d, s, i, g, o), to: Spectre.Test.GAM.Ingress
 
     def observe(context, %{kind: :presentation_response} = envelope, now, _) do
       Presentation.response_evidence(
@@ -42,12 +42,12 @@ defmodule Spectre.Server.ToolGovernedRuntimeTest do
       )
     end
 
-    defdelegate observe(context, attrs, now, opts), to: Spectre.GAM.V04Test.Ingress
+    defdelegate observe(context, attrs, now, opts), to: Spectre.Test.GAM.Ingress
   end
 
   defmodule Executor do
-    defdelegate executor_ref(), to: Spectre.GAM.V04Test.Executor
-    defdelegate contract_ref(), to: Spectre.GAM.V04Test.Executor
+    defdelegate executor_ref(), to: Spectre.Test.GAM.Executor
+    defdelegate contract_ref(), to: Spectre.Test.GAM.Executor
 
     def execute(act, attempt, _, opts) do
       send(opts[:observer], {:effect, act.class, self()})

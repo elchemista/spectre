@@ -1,12 +1,12 @@
 defmodule Spectre.Server.GAM.Managed.Reviewer do
   @moduledoc false
 
-  alias Spectre.GAM
-  alias Spectre.GAM.Canonical.Value
-  alias Spectre.GAM.Domain.Sequencer
-  alias Spectre.GAM.Duty.Disposition
-  alias Spectre.GAM.GovernedAct.Execution
-  alias Spectre.GAM.Scope.Opening
+  alias ExGAM, as: GAM
+  alias ExGAM.Canonical.Value
+  alias ExGAM.Domain.Sequencer
+  alias ExGAM.Duty.Disposition
+  alias ExGAM.GovernedAct.Execution
+  alias ExGAM.Scope.Opening
   alias Spectre.Server.GAM.Managed.{Gate, Identity}
 
   @authorization_end 253_402_300_799_999

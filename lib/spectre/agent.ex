@@ -26,7 +26,7 @@ defmodule Spectre.Agent do
   distinct: useful labelled text does not need a vector until vector search.
 
   A route's `protected: true` does not grant authority. The Server proposes a
-  concrete consequence through the host GAM binding; `Spectre.GAM` admits and
+  concrete consequence through the host GAM binding; `ExGAM` admits and
   records acts before executors receive capability. See the GAM and 0.4
   migration guides and the
   [GAM manifesto](https://spectre.guide/en/governed-act-model).

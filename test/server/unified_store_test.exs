@@ -1,12 +1,12 @@
-Code.require_file("../gam/support/projection_store.ex", __DIR__)
+Code.require_file("../support/gam/projection_store.ex", __DIR__)
 
 defmodule Spectre.Server.UnifiedStoreTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM.Domain.Projection.Store, as: ProjectionStore
-  alias Spectre.GAM.Ledger
-  alias Spectre.GAM.Ledger.Store.Disk, as: LedgerDisk
-  alias Spectre.GAM.Test.ProjectionStore, as: ProjectionMemory
+  alias ExGAM.Domain.Projection.Store, as: ProjectionStore
+  alias ExGAM.Ledger
+  alias ExGAM.Ledger.Store.Disk, as: LedgerDisk
+  alias Spectre.Test.GAM.ProjectionStore, as: ProjectionMemory
   alias Spectre.Server
   alias Spectre.Server.GAM.Managed.LedgerStorage
   alias Spectre.Server.Store.Disk

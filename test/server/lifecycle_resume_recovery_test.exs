@@ -3,7 +3,7 @@
 defmodule Spectre.Server.LifecycleResumeRecoveryTest do
   use ExUnit.Case, async: true
   alias Spectre.Server
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Canonical.Value
 
   defmodule Router do
     def route(agent, input, _opts) do

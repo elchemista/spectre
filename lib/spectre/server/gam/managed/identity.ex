@@ -1,7 +1,7 @@
 defmodule Spectre.Server.GAM.Managed.Identity do
   @moduledoc false
 
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Canonical.Value
 
   @fields [:subject, :conversation, :task, :tenant, :org, :organization]
   @keys Enum.map(@fields, &{Atom.to_string(&1), &1})

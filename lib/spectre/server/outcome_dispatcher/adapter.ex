@@ -3,7 +3,7 @@ defmodule Spectre.Server.OutcomeDispatcher.Adapter do
   Host bridge from durable operation references to a recovered result and Server.
 
   `recover/3` reauthenticates and rebinds the appropriate GAM Scope, then reads
-  recorded results, for example through `Spectre.GAM.recover_proposal/2`.
+  recorded results, for example through `ExGAM.recover_proposal/2`.
   It never resubmits an effect. Its event reference identifies a durable result
   revision. When a non-nil reference is requested it must recover that exact
   revision, not silently substitute a more recent result.

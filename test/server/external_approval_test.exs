@@ -318,36 +318,36 @@ defmodule Spectre.Server.ExternalApprovalTest do
     refute request["principal_ref"] in managed_state.mandate.target_refs
     assert managed_state.show_mandate.classes == ["presentation.show"]
     refute managed_state.show_mandate.ceiling.write
-    projection = Spectre.GAM.Domain.Sequencer.projection(managed_state.domain)
+    projection = ExGAM.Domain.Sequencer.projection(managed_state.domain)
 
     {:ok, external_context} =
-      Spectre.GAM.SubmissionContext.from_evidence_bindings(approval.bindings)
+      ExGAM.SubmissionContext.from_evidence_bindings(approval.bindings)
 
-    assert {:error, _} = Spectre.GAM.GovernedAct.View.scope_context(projection, external_context)
+    assert {:error, _} = ExGAM.GovernedAct.View.scope_context(projection, external_context)
 
     assert {:ok, _} =
-             Spectre.GAM.GovernedAct.View.observation_context(
+             ExGAM.GovernedAct.View.observation_context(
                projection,
                external_context,
                approval
              )
 
     {:ok, unrelated} =
-      Spectre.GAM.Ingress.evidence(external_context, approval.observed_at,
+      ExGAM.Ingress.evidence(external_context, approval.observed_at,
         proposition: "arbitrary-request",
         payload: %{},
         issuer_ref: approval.issuer_ref
       )
 
     assert {:error, _} =
-             Spectre.GAM.GovernedAct.View.observation_context(
+             ExGAM.GovernedAct.View.observation_context(
                projection,
                external_context,
                unrelated
              )
 
     assert {:error, _} =
-             Spectre.GAM.GovernedAct.View.observation_context(
+             ExGAM.GovernedAct.View.observation_context(
                %{projection | outcomes: %{}},
                external_context,
                approval
@@ -752,7 +752,7 @@ defmodule Spectre.Server.ExternalApprovalTest do
       "from" => request["from"],
       "to" => request["to"],
       "relates_to" => request["id"],
-      "request_digest" => Spectre.GAM.Canonical.Value.digest!(request)
+      "request_digest" => ExGAM.Canonical.Value.digest!(request)
     }
 
   test "optional maintenance ticks notify application policy without creating consent", c do

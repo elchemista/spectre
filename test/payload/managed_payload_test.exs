@@ -1,7 +1,7 @@
 defmodule Spectre.Server.GAM.Managed.PayloadTest do
   use ExUnit.Case, async: true
 
-  alias Spectre.GAM.Evidence
+  alias ExGAM.Evidence
   alias Spectre.Server.Checkpoint
   alias Spectre.Server.GAM.Managed.Payload
 

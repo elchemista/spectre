@@ -9,7 +9,6 @@ defmodule Spectre.Application do
       {Registry, keys: :unique, name: Spectre.Server.Registry},
       {DynamicSupervisor, strategy: :one_for_one, name: Spectre.Server.Supervisor},
       {Task.Supervisor, name: Spectre.Server.TaskSupervisor},
-      {Spectre.GAM.Application, []},
       {Registry, keys: :unique, name: Spectre.Instance.Registry},
       {Spectre.Subject.Registry, name: Spectre.Subject.Registry},
       {Registry, keys: :duplicate, name: Spectre.Operation.EventRegistry},

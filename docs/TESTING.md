@@ -1,4 +1,4 @@
-# Testing Spectre 0.4.1
+# Testing Spectre 0.4.2
 
 The CI workflow is the source of truth for release checks. It tests Elixir
 `1.19.x` / OTP `28.x` and Elixir `1.20.x` / OTP `29.x`. Use separate build
@@ -10,7 +10,7 @@ paths when switching toolchains.
 mix format --check-formatted
 mix compile --warnings-as-errors
 mix test
-SPECTRE_TEST_PROJECTION=1 mix test test/gam
+SPECTRE_TEST_PROJECTION=1 mix test test/server test/server_gam_test.exs
 mix credo
 mix dialyzer
 mix docs --warnings-as-errors
@@ -25,12 +25,14 @@ For the coverage CI cell, regenerate every export from the same source revision:
 
 ```sh
 mix test --cover --export-coverage ram
-SPECTRE_TEST_PROJECTION=1 mix test test/gam --cover --export-coverage projection
+SPECTRE_TEST_PROJECTION=1 mix test test/server test/server_gam_test.exs --cover --export-coverage projection
 ```
 
 Then run `mix test.coverage` in core. Only the two core exports contribute to
 this gate; no Ledger, database or companion package is required. Archive or remove
 earlier `cover/*.coverdata` exports before starting a new source revision.
+The [ExGAM repository](https://github.com/elchemista/ex_gam) runs the standalone
+kernel suite.
 
 ## Examples and complete Stack
 

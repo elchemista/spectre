@@ -1,12 +1,12 @@
 defmodule Spectre.Server.AutomaticFoundationTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM
+  alias ExGAM, as: GAM
   alias Spectre.Server.GAM.Managed
   alias Spectre.Server.GAM.Managed.Authority
   alias Spectre.Server.GAM.Managed.LedgerStorage
   alias Spectre.Server.GAM.Managed.Store, as: Memory
-  alias Spectre.GAM.Ledger.Store.ETS, as: LedgerETS
+  alias ExGAM.Ledger.Store.ETS, as: LedgerETS
 
   defmodule Stack do
     use Spectre.Stack

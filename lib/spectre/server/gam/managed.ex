@@ -12,13 +12,13 @@ defmodule Spectre.Server.GAM.Managed do
   cannot widen the root's configured operation authority.
   """
   use GenServer
-  alias Spectre.GAM
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM, as: GAM
+  alias ExGAM.Canonical.Value
   alias Spectre.Server.GAM, as: Bridge
   alias Spectre.Server.GAM.Invocation
   alias Spectre.Server.GAM.Managed.{Binding, Bootstrap, Gate, Reviewer}
   alias Spectre.Server.GAM.Managed.Identity, as: ManagedIdentity
-  alias Spectre.GAM.Domain.Recovery.Policy, as: RecoveryPolicy
+  alias ExGAM.Domain.Recovery.Policy, as: RecoveryPolicy
   alias Spectre.Server.{Activities, Session, TaskGuard}
 
   @typedoc false

@@ -149,13 +149,13 @@ defmodule SpectreCanonicalValueTest do
              Value.encode([:a, :b, :c], max_bytes: 11)
 
     assert {:error, {:canonical_value_too_large, 16, 11}} =
-             Spectre.GAM.Canonical.Value.encode([:a, :b, :c], max_bytes: 11)
+             ExGAM.Canonical.Value.encode([:a, :b, :c], max_bytes: 11)
 
     assert {:error, {:unsupported_canonical_value, [1], :pid}} =
              Value.encode([:a, self()], max_bytes: 11)
 
     assert {:error, {:canonical_value_too_large, 16, 11}} =
-             Spectre.GAM.Canonical.Value.encode([:a, self()], max_bytes: 11)
+             ExGAM.Canonical.Value.encode([:a, self()], max_bytes: 11)
 
     assert {:error, {:canonical_depth_exceeded, [0], 0}} =
              Value.encode([:nested], max_depth: 0)

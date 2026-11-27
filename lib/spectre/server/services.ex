@@ -39,11 +39,11 @@ defmodule Spectre.Server.Services do
     end
   end
 
-  defp classification_context(%{presentation: %Spectre.GAM.Presentation{} = presentation}) do
+  defp classification_context(%{presentation: %ExGAM.Presentation{} = presentation}) do
     # Public material only. Candidate, authority handles, input envelopes and
     # executor data must not leak into a classifier prompt through `inspect`.
     Spectre.JSON.encode!(%{
-      material: Spectre.GAM.Presentation.material(presentation),
+      material: ExGAM.Presentation.material(presentation),
       rendered_payload: presentation.rendered_payload
     })
   end

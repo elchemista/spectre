@@ -2,7 +2,7 @@ defmodule SpectreHexReleaseContractTest do
   use ExUnit.Case, async: true
 
   @root Path.expand("..", __DIR__)
-  @release "0.4.1"
+  @release "0.4.2"
   @published "0.4.0"
   @workflow Path.join(@root, ".github/workflows/ci.yml")
   @satellite_apps ~w(
@@ -114,6 +114,9 @@ defmodule SpectreHexReleaseContractTest do
 
     assert {:vettore, "~> 0.3.6"} =
              Enum.find(config[:deps], &match?({:vettore, _requirement}, &1))
+
+    assert {:ex_gam, "~> 0.1.0"} in config[:deps]
+    assert :ex_gam in Application.spec(:spectre, :applications)
 
     refute Enum.any?(config[:deps], fn
              {:jason, _requirement} -> true

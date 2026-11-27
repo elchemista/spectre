@@ -1,7 +1,7 @@
 defmodule Spectre.Server.DiskStoreCompatibilityTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM.Canonical.Value
+  alias ExGAM.Canonical.Value
   alias Spectre.Server.Store.Disk
 
   @tag :tmp_dir

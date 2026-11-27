@@ -19,11 +19,11 @@ defmodule Spectre.Server.GAM do
   The adapter rechecks expiry after interpretation and before submission;
   Evidence validity also fences admission across queued Domain commands.
   """
-  alias Spectre.GAM
-  alias Spectre.GAM.{Candidate, Presentation, Scope}
-  alias Spectre.GAM.Domain.Sequencer
-  alias Spectre.GAM.Facade.Proposal
-  alias Spectre.GAM.Mind.Turn
+  alias ExGAM, as: GAM
+  alias ExGAM.{Candidate, Presentation, Scope}
+  alias ExGAM.Domain.Sequencer
+  alias ExGAM.Facade.Proposal
+  alias ExGAM.Mind.Turn
   alias Spectre.Server.Store.Port, as: Store
 
   @type result_reference :: %{
@@ -349,7 +349,7 @@ defmodule Spectre.Server.GAM do
   @spec result_key(term()) :: {:ok, String.t()} | {:error, term()}
   def result_key(result) do
     with {:ok, reference} <- result_reference(result),
-         do: {:ok, "gam-result:" <> Spectre.GAM.Canonical.Value.digest!(reference)}
+         do: {:ok, "gam-result:" <> ExGAM.Canonical.Value.digest!(reference)}
   end
 
   @doc "Resolves references through the host's authenticated Scope without executing an effect."
@@ -357,7 +357,7 @@ defmodule Spectre.Server.GAM do
   def resolve_result(reference, context, opts) when is_map(reference) do
     with {:ok, config} <- config(opts),
          {:ok, scope} <- scope(config, context),
-         {:ok, view} <- Spectre.GAM.Facade.Access.scoped_query(scope, {:selected_view, reference}),
+         {:ok, view} <- ExGAM.Facade.Access.scoped_query(scope, {:selected_view, reference}),
          {:ok, result} <- referenced_result(view, reference, scope) do
       {:governed, result}
     end

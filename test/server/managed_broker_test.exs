@@ -1,9 +1,9 @@
-Code.require_file("../gam/helper.exs", __DIR__)
+Code.require_file("../support/gam/helper.exs", __DIR__)
 
 defmodule Spectre.Server.ManagedBrokerTest do
-  use Spectre.GAM.Test.GovernedBoundaryCase, async: false
+  use Spectre.Test.GAM.GovernedBoundaryCase, async: false
 
-  alias Spectre.GAM.Secret.CheckoutReceipt
+  alias ExGAM.Secret.CheckoutReceipt
   alias Spectre.Server.GAM.Managed.{Broker, Executor, Store}
   alias Spectre.Server.Store.Disk
 

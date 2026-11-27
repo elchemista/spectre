@@ -3,7 +3,7 @@ defmodule Spectre.Server.StorageRecoveryTest do
   alias Spectre.Server
 
   defmodule Policy do
-    @behaviour Spectre.GAM.Domain.Recovery.Policy
+    @behaviour ExGAM.Domain.Recovery.Policy
     def check(_, _), do: :ok
 
     def recover(incident, opts) do

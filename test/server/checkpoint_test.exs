@@ -102,6 +102,20 @@ defmodule Spectre.Server.CheckpointTest do
     start_supervised!({Spectre.Server.Store.Disk, path: path})
   end
 
+  test "checkpoints preserve the legacy wire tag for governed records" do
+    row = %ExGAM.Row{attempt: true, write: true}
+    new_tag = "Elixir.ExGAM.Row"
+    old_tag = "Elixir.Spectre.GAM.Row"
+
+    assert {:ok, <<"SPCV", 1, 0x23, 16::32, ^new_tag::binary-size(16), fields::binary>>} =
+             ExGAM.Canonical.Value.encode(row, allowed_structs: [ExGAM.Row])
+
+    old_bytes = <<"SPCV", 1, 0x23, byte_size(old_tag)::32, old_tag::binary, fields::binary>>
+
+    assert {:ok, ^row} = Server.Checkpoint.decode_snapshot(old_bytes)
+    assert {:ok, ^old_bytes} = Server.Checkpoint.encode_value(row)
+  end
+
   test "acquired state and delivery inbox survive restart together" do
     store = store()
     opts = [agent: Agent, identity: %{account_id: "one"}, checkpoint: {store, "one"}]

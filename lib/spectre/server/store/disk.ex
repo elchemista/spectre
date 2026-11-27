@@ -22,8 +22,8 @@ defmodule Spectre.Server.Store.Disk do
   use GenServer
   @behaviour Spectre.Server.Store
 
-  alias Spectre.GAM.Canonical.Value
-  alias Spectre.GAM.Ledger.Store.Disk.FileIO
+  alias ExGAM.Canonical.Value
+  alias ExGAM.Ledger.Store.Disk.FileIO
   alias Spectre.Server.Store.Page
 
   @magic "SPSS1"

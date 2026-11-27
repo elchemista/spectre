@@ -1,23 +1,23 @@
-Code.require_file("../gam/helper.exs", __DIR__)
+Code.require_file("../support/gam/helper.exs", __DIR__)
 
 defmodule Spectre.Server.GAMConsentBoundariesTest do
   use ExUnit.Case, async: false
 
-  alias Spectre.GAM
-  alias Spectre.GAM.{Candidate, Consent, Domain, Presentation, Scope}
-  alias Spectre.GAM.Domain.Sequencer
-  alias Spectre.GAM.Mind.Turn
-  alias Spectre.GAM.V04Test.{Fixture, Runtime}
+  alias ExGAM, as: GAM
+  alias ExGAM.{Candidate, Consent, Domain, Presentation, Scope}
+  alias ExGAM.Domain.Sequencer
+  alias ExGAM.Mind.Turn
+  alias Spectre.Test.GAM.{Fixture, Runtime}
   alias Spectre.Server.GAM, as: Bridge
 
   defmodule Mind do
-    use Spectre.GAM.Mind, ref: "mind:consent-boundaries"
+    use ExGAM.Mind, ref: "mind:consent-boundaries"
     def deliberate(_, _), do: {:ok, []}
   end
 
   defmodule Ingress do
-    defdelegate ref(), to: Spectre.GAM.V04Test.Ingress
-    defdelegate authenticate(d, s, i, g, o), to: Spectre.GAM.V04Test.Ingress
+    defdelegate ref(), to: Spectre.Test.GAM.Ingress
+    defdelegate authenticate(d, s, i, g, o), to: Spectre.Test.GAM.Ingress
 
     def observe(context, %{kind: :presentation_response} = envelope, now, _) do
       Presentation.response_evidence(
@@ -31,12 +31,12 @@ defmodule Spectre.Server.GAMConsentBoundariesTest do
       )
     end
 
-    defdelegate observe(context, attrs, now, opts), to: Spectre.GAM.V04Test.Ingress
+    defdelegate observe(context, attrs, now, opts), to: Spectre.Test.GAM.Ingress
   end
 
   defmodule Executor do
-    defdelegate executor_ref(), to: Spectre.GAM.V04Test.Executor
-    defdelegate contract_ref(), to: Spectre.GAM.V04Test.Executor
+    defdelegate executor_ref(), to: Spectre.Test.GAM.Executor
+    defdelegate contract_ref(), to: Spectre.Test.GAM.Executor
 
     def execute(act, attempt, _, opts) do
       send(opts[:observer], {:effect, act.class})
@@ -144,7 +144,7 @@ defmodule Spectre.Server.GAMConsentBoundariesTest do
         mind: Mind,
         ingress: Ingress,
         executors: [{Executor, observer: self(), fail_show: Map.get(tags, :fail_show, false)}],
-        name: {:via, Registry, {Spectre.GAM.Domain.Registry, domain_ref}}
+        name: {:via, Registry, {ExGAM.Domain.Registry, domain_ref}}
       )
 
     on_exit(fn -> Fixture.stop_domain(f) end)
