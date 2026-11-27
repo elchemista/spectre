@@ -39,11 +39,63 @@ defmodule SpectreCanonicalValueTest do
              Value.decode(encoded)
   end
 
+  test "legacy Stack codec reads the same portable data and digests as ExGAM" do
+    alias Spectre.GAM.Canonical.Value, as: Legacy
+
+    value = %{operation: :deliver, args: %{"body" => "portable"}}
+    assert :ok = Legacy.validate(value)
+    assert {:ok, bytes} = Legacy.encode(value)
+    assert bytes == Legacy.encode!(value)
+    assert {:ok, ^value} = Legacy.decode(bytes)
+    assert {:ok, digest} = Legacy.digest(value)
+    assert digest == Legacy.digest!(value)
+    assert digest == ExGAM.Canonical.Value.digest!(value)
+  end
+
+  test "checkpoint wire tags must map uniquely to allowlisted struct modules" do
+    options = [
+      allowed_structs: [Subject, ExGAM.Row],
+      struct_tags: %{Subject => "same-tag", ExGAM.Row => "same-tag"}
+    ]
+
+    assert {:error, :invalid_canonical_struct_tags} =
+             Value.encode_budgeted(%ExGAM.Row{}, options)
+
+    assert {:error, {:invalid_allowed_structs, [Subject, 42]}} =
+             Value.encode_budgeted(nil, allowed_structs: [Subject, 42])
+  end
+
+  test "the checkpoint decoder rejects alternate record and scalar encodings" do
+    assert {:error, :noncanonical_value_encoding} =
+             Value.decode_checked(<<"SPCV", 1, 0x13, 3::32, "nil">>, [])
+
+    assert {:error, {:truncated_canonical_value, :integer}} =
+             Value.decode_checked(<<"SPCV", 1, 0x10, 2::32, "1">>, [])
+
+    assert {:error, {:duplicate_canonical_map_key, []}} =
+             Value.decode(<<"SPCV", 1, 0x22, 2::32, 0, 0, 0x13, 3::32, "nil", 0>>)
+
+    body =
+      [__struct__: Subject, id: "example", metadata: %{}]
+      |> Enum.map(fn {key, value} -> {payload!(key), payload!(value)} end)
+      |> Enum.sort()
+      |> Enum.map(fn {key, value} -> [key, value] end)
+
+    encoded = IO.iodata_to_binary([<<"SPCV", 1, 0x22, 3::32>>, body])
+
+    assert {:error, :noncanonical_value_encoding} =
+             Value.decode_checked(encoded, allowed_structs: [Subject])
+  end
+
   test "nonportable VM values and improper lists fail with typed reasons" do
     assert {:error, {:unsupported_canonical_value, [], :pid}} = Value.encode(self())
     assert {:error, {:unsupported_canonical_value, [], :reference}} = Value.encode(make_ref())
     assert {:error, {:unsupported_canonical_value, [], :function}} = Value.encode(fn -> :ok end)
     assert {:error, {:unsupported_canonical_value, [], :bitstring}} = Value.encode(<<1::1>>)
+
+    port = Port.open({:spawn_driver, ~c"ram_file_drv"}, [])
+    assert {:error, {:unsupported_canonical_value, [], :port}} = Value.encode(port)
+    Port.close(port)
 
     assert {:error, {:improper_canonical_list, [{:tail, 1}]}} =
              Value.encode([:head | :tail])
@@ -144,7 +196,7 @@ defmodule SpectreCanonicalValueTest do
     assert {:error, {:canonical_value_too_large, _actual, 5}} =
              Value.encode("too large", max_bytes: 5)
 
-    # The shared engine preserves each public codec's established byte budget.
+    # Spectre and ExGAM preserve their established byte-budget behavior.
     assert {:error, {:canonical_value_too_large, 28, 11}} =
              Value.encode([:a, :b, :c], max_bytes: 11)
 

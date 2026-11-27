@@ -17,6 +17,8 @@ defmodule Spectre.Server.DiskStoreCompatibilityTest do
 
     store = start_supervised!({Disk, path: path})
     assert {:ok, %{revision: 7, value: "saved checkpoint"}} = Disk.fetch(store, "agent")
+    assert {:ok, [], nil} = Disk.list(store, {:checkpoint, :missing})
+    assert {:error, :invalid_store_page} = Disk.list(store, {:checkpoint, :missing}, limit: 0)
     assert {:ok, 8} = Disk.compare_and_swap(store, "agent", 7, "upgraded checkpoint")
     assert {:error, :conflict} = Disk.compare_and_swap(store, "agent", 7, "stale writer")
   end

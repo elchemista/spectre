@@ -373,6 +373,17 @@ defmodule Spectre.Server.ActivityFenceTest do
     refute_received {:signal, _, {:revise, :new_work}}
   end
 
+  test "a stopped managed owner cannot fence an activity or close its presentation" do
+    {owner, control, _opts} = start_managed(:memory, nil)
+    Spectre.Test.Processes.stop(owner)
+
+    assert {:error, :activity_fence_unavailable} =
+             Managed.register_activity(owner, control, "stopped-activity")
+
+    assert {:error, :activity_gate_unavailable} =
+             Managed.close_activity_show(owner, control, "stopped-presentation")
+  end
+
   test "missing, unavailable or corrupt fence records cannot authorize an effect" do
     {owner, control, _opts} = start_managed(:memory, nil)
     {:ok, {coordinator, ^control}} = Managed.activity_owner(owner, :existing)

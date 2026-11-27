@@ -118,7 +118,7 @@ defmodule Spectre.Server.ManagedReviewerTest do
     support = [supporting_refs: [duty.act_ref]]
 
     assert {:error, :untrusted_reviewer_transport} =
-             Spectre.GAM.resolve_duty(server, duty.ref, :ratify, support)
+             Spectre.GAM.resolve_duty(server, duty.ref, :ratify)
 
     assert {:error, :untrusted_governance_transport} =
              Server.GAM.Managed.dispose(

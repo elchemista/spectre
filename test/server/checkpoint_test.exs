@@ -91,6 +91,10 @@ defmodule Spectre.Server.CheckpointTest do
     end
   end
 
+  defmodule VersionedCheckpoints do
+    def entries(history, key, limit), do: {:ok, history |> Map.fetch!(key) |> Enum.take(limit)}
+  end
+
   defp store do
     path =
       Path.join(
@@ -114,6 +118,17 @@ defmodule Spectre.Server.CheckpointTest do
 
     assert {:ok, ^row} = Server.Checkpoint.decode_snapshot(old_bytes)
     assert {:ok, ^old_bytes} = Server.Checkpoint.encode_value(row)
+  end
+
+  test "a payload-backed checkpoint reader forwards the adapter's history bound" do
+    entries = [%{revision: 2}, %{revision: 1}]
+    reader = %{adapter: VersionedCheckpoints, store: %{agent: entries}}
+    assert {:ok, [%{revision: 2}]} = Server.Checkpoint.entries(reader, :agent, 1)
+
+    reader = %{reader | adapter: Server.Store.Disk}
+
+    assert {:error, :checkpoint_history_unavailable} =
+             Server.Checkpoint.entries(reader, :agent, 1)
   end
 
   test "acquired state and delivery inbox survive restart together" do

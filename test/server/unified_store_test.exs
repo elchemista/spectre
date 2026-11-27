@@ -162,6 +162,8 @@ defmodule Spectre.Server.UnifiedStoreTest do
 
     def gam_domain(%{selection: :not_configured}), do: :not_configured
     def gam_domain(%{selection: {:error, reason}}), do: {:error, reason}
+    def gam_domain(%{selection: :malformed}), do: :malformed
+    def gam_domain(%{selection: :unreachable}), do: exit(:noproc)
 
     def gam_domain(ref),
       do:
@@ -170,6 +172,17 @@ defmodule Spectre.Server.UnifiedStoreTest do
            ledger: {LedgerDisk, server: ref.ledger},
            projection: {ProjectionMemory, server: ref.projection}
          }}
+  end
+
+  defmodule UnavailableHistory do
+    def gam_ledger(:ledger_offline), do: exit(:noproc)
+    def gam_ledger(ref), do: LegacyHistory.gam_ledger(ref)
+
+    def fetch(:conflicted, _), do: {:error, :offline}
+    def fetch(_, {:managed_authority, _}), do: :not_found
+    def fetch(_, {:managed_agent, _}), do: {:error, :offline}
+
+    def compare_and_swap(_, _, _, _), do: {:error, :conflict}
   end
 
   defmodule Faults do
@@ -446,6 +459,96 @@ defmodule Spectre.Server.UnifiedStoreTest do
 
     assert explicit.store == selected
     assert explicit.projection_store == nil
+  end
+
+  test "malformed or unreachable legacy providers fail before creating authority", c do
+    assert {:error, :managed_ledger_requires_coordination_store} =
+             LedgerStorage.open(:ledger, nil, "unconfigured", "profile")
+
+    for selection <- [:malformed, :unreachable] do
+      ref = Map.put(c.ref, :selection, selection)
+
+      assert {:error, _reason} =
+               LedgerStorage.open(:ledger, {LegacyDomain, ref}, "unavailable", "profile")
+
+      assert :not_found = Disk.fetch(c.ref.journal, {:managed_authority, "unavailable"})
+      assert :not_found = LedgerDisk.head("unavailable", server: c.ref.ledger)
+    end
+  end
+
+  test "legacy history and coordination read errors preserve the original failure", c do
+    assert {:error, _reason} =
+             LedgerStorage.open(
+               :ledger,
+               {UnavailableHistory, :ledger_offline},
+               "legacy",
+               "profile"
+             )
+
+    journal = {UnavailableHistory, c.ref}
+    assert {:error, :offline} = LedgerStorage.open(:ledger, journal, "legacy", "profile")
+
+    key = {:managed_authority, "legacy"}
+    entry = %{revision: 1, value: %{digest: "profile", issued_at: 1, ready: false}}
+
+    assert {:error, :offline} =
+             LedgerStorage.ready(%{
+               journal: {UnavailableHistory, :conflicted},
+               authority_profile: {key, entry}
+             })
+  end
+
+  test "legacy projection and ledger readers use the same ExGAM records and cursors", c do
+    alias Spectre.GAM.Domain.Projection.{IndexRows, Rows, Store}
+    alias Spectre.GAM.Ledger.{Entry, Reader}
+    alias Spectre.GAM.Ledger.Store, as: History
+
+    domain = "legacy-reader"
+    config = {ProjectionMemory, server: c.ref.projection}
+    history = {LedgerDisk, server: c.ref.ledger}
+    cursor = %{revision: 0, head_digest: Entry.genesis_digest()}
+    key = {:evidence_revisions, 1}
+    row = %ExGAM.Row{write: true}
+    next = %{cursor | revision: 1}
+
+    assert :not_found = History.head(history, domain)
+
+    assert :not_found =
+             Reader.reduce(history, domain, cursor, [], fn _, state -> {:ok, state} end)
+
+    assert Spectre.GAM.Portable.sha256_digest?(cursor.head_digest)
+
+    assert {:ok, handle} = ProjectionStore.open(config, domain)
+    assert :ok = ProjectionStore.commit(config, handle, cursor, next, [{:put, key, row}])
+    assert {:ok, %{handle: ^handle, cursor: ^next}} = Store.head(config, domain)
+    assert {:ok, %{^key => bytes}} = Store.fetch(config, handle, next, [key])
+    assert {:ok, [{^key, ^bytes}], nil} = Store.page(config, handle, next, :evidence_revisions)
+    assert {:ok, ^bytes} = Rows.encode(row)
+    assert {:ok, ^row} = Rows.decode(bytes)
+    assert :evidence_revisions in Rows.collections()
+    assert IndexRows.position(:evidence_revisions, 1) == 1
+    assert IndexRows.group(:act_declassifications, {"act", "record"}) == "act"
+  end
+
+  test "legacy PostgreSQL configuration and callbacks forward to ExGAM" do
+    alias Spectre.GAM.Ledger.Store.Postgres
+
+    opts = [table_prefix: "spectre_gam"]
+    assert {:ok, %{table_prefix: "spectre_gam"}} = Postgres.namespace(opts)
+    assert Postgres.migration_sql(opts) == ExGAM.Ledger.Store.Postgres.migration_sql(opts)
+
+    for {callback, args} <- [
+          append: ["legacy", "batch", [], 0],
+          load: ["legacy"],
+          load_from: ["legacy", 0],
+          head: ["legacy"],
+          read_batch: ["legacy", 1],
+          lookup_batch: ["legacy", "batch"],
+          export: ["legacy"]
+        ] do
+      assert {:error, {:missing_ledger_postgres_option, :repo}} =
+               apply(Postgres, callback, args ++ [[]])
+    end
   end
 
   test "the translating ledger retains guarded ambiguity and native suffix options" do

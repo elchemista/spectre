@@ -112,6 +112,9 @@ defmodule Spectre.Server.GAMBindingBoundariesTest do
   end
 
   test "host scope, interpreter, TTL and renderer failures remain explicit", c do
+    assert {:error, :skills_require_standard_gam_bridge} =
+             Bridge.pin_domain({__MODULE__, []}, c.context)
+
     assert {:error, :authenticated_scope_required} =
              Bridge.propose(
                :refund,
